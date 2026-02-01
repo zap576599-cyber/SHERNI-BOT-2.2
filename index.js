@@ -9,16 +9,11 @@ const axios = require('axios');
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
-// CRITICAL FIX: Look for both URL and URI spellings just in case
 const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || process.env.DISCORD_REDIRECT_URL;
-const PORT = process.env.PORT || 3000;
-const SESSION_SECRET = process.env.SESSION_SECRET || 'sher-bot-secret-123';
+const PORT = process.env.PORT || 10000; 
+const SESSION_SECRET = process.env.SESSION_SECRET || 'sher-bot-ultra-secret-key';
 
-console.log('--- SHER BOT STARTUP ---');
-console.log('Using Redirect URI:', REDIRECT_URI);
-if (!REDIRECT_URI) console.error('❌ ERROR: No Redirect URI found in Render Environment!');
-console.log('------------------------');
-
+// Database Mock (In-memory)
 const db = {
     settings: new Map()
 };
@@ -35,6 +30,7 @@ function getSettings(guildId) {
     return db.settings.get(guildId);
 }
 
+// --- DISCORD CLIENT ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -45,57 +41,90 @@ const client = new Client({
     partials: [Partials.Channel]
 });
 
-// Slash Commands setup
 const commands = [
     {
         name: 'ban',
-        description: 'Ban a user',
+        description: 'Ban a user from the server',
         options: [
-            { name: 'user', type: 6, description: 'User to ban', required: true },
-            { name: 'reason', type: 3, description: 'Reason', required: false }
+            { name: 'user', type: 6, description: 'The user to ban', required: true },
+            { name: 'reason', type: 3, description: 'Reason for the ban', required: false }
         ]
     },
     {
         name: 'timeout',
-        description: 'Mute a user',
+        description: 'Mute a user for a specific duration',
         options: [
-            { name: 'user', type: 6, description: 'User to mute', required: true },
-            { name: 'minutes', type: 4, description: 'Minutes', required: true }
+            { name: 'user', type: 6, description: 'The user to mute', required: true },
+            { name: 'minutes', type: 4, description: 'Duration in minutes', required: true }
         ]
     }
 ];
 
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
 client.once('ready', async () => {
-    console.log(`SHER BOT is online as ${client.user.tag}`);
+    console.log(`✅ SHER BOT is online as ${client.user.tag}`);
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+        console.log('✅ Slash commands registered successfully.');
     } catch (error) {
-        console.error('Failed to register commands:', error);
+        console.error('❌ Failed to register commands:', error);
     }
 });
 
 // Auto-Delete Logic
 client.on('messageCreate', async (message) => {
     if (!message.guild || message.author.id === client.user.id) return;
+    
     const settings = getSettings(message.guild.id);
     if (settings.autoDeleteChannels.includes(message.channel.id)) {
+        // Check filters
         if (settings.ignoredUsers.includes(message.author.id)) return;
         if (settings.ignoreBots && message.author.bot) return;
         if (settings.ignoreThreads && message.channel.isThread()) return;
         
         try {
+            // Short delay to allow user to see the "bruh" moment before it vanishes
             setTimeout(async () => {
-                if (message.deletable) await message.delete().catch(() => {});
+                if (message.deletable) {
+                    await message.delete().catch(() => {});
+                }
             }, 1000);
-        } catch (e) {}
+        } catch (e) {
+            console.error("Delete Error:", e);
+        }
     }
 });
 
-client.login(TOKEN);
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+        return interaction.reply({ content: 'Permissions Error: You must be an Admin to use SHER BOT commands.', ephemeral: true });
+    }
 
-// --- WEB SERVER ---
+    const { commandName } = interaction;
+    const targetUser = interaction.options.getUser('user');
+    const member = interaction.guild.members.cache.get(targetUser.id);
+
+    if (!member) return interaction.reply({ content: 'User not found in this server.', ephemeral: true });
+
+    try {
+        if (commandName === 'ban') {
+            const reason = interaction.options.getString('reason') || 'No reason provided';
+            await member.ban({ reason });
+            await interaction.reply({ content: `🚫 **Banned:** ${targetUser.tag}` });
+        } else if (commandName === 'timeout') {
+            const minutes = interaction.options.getInteger('minutes');
+            await member.timeout(minutes * 60 * 1000);
+            await interaction.reply({ content: `⏳ **Muted:** ${targetUser.tag} for ${minutes} minutes.` });
+        }
+    } catch (err) {
+        interaction.reply({ content: `Error: I might lack permissions to moderate that user.`, ephemeral: true });
+    }
+});
+
+client.login(TOKEN).catch(err => console.error("❌ DISCORD LOGIN ERROR:", err));
+
+// --- WEB SERVER (DASHBOARD) ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({
@@ -104,30 +133,37 @@ app.use(session({
     maxAge: 24 * 60 * 60 * 1000
 }));
 
-const ui = (content, user = null) => `
+// Render Health Check
+app.get('/health', (req, res) => res.status(200).send('OK'));
+
+const uiWrapper = (content, user = null) => `
 <!DOCTYPE html>
 <html>
 <head>
     <title>SHER BOT Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #2f3136; color: #dcddde; padding: 20px; line-height: 1.6; }
-        .card { max-width: 650px; margin: auto; background: #36393f; padding: 25px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
-        .btn { background: #5865f2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; border: none; cursor: pointer; font-weight: 600; }
-        .btn:hover { background: #4752c4; }
-        .logout { color: #ed4245; text-decoration: none; font-size: 0.9em; }
-        hr { border: 0; border-top: 1px solid #4f545c; margin: 20px 0; }
-        input[type="text"] { width: 100%; padding: 10px; background: #202225; border: 1px solid #202225; color: white; border-radius: 4px; box-sizing: border-box; }
-        .channel-row { background: #2f3136; padding: 10px; margin: 5px 0; border-radius: 4px; display: flex; align-items: center; }
-        input[type="checkbox"] { margin-right: 12px; transform: scale(1.2); }
+        body { font-family: 'Inter', -apple-system, sans-serif; background: #23272a; color: #ffffff; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 800px; background: #2c2f33; padding: 40px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; margin-bottom: 30px; padding-bottom: 20px; }
+        .btn { background: #5865f2; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        .btn:hover { background: #4752c4; transform: translateY(-2px); }
+        .btn-save { background: #3ba55c; width: 100%; margin-top: 20px; }
+        .btn-save:hover { background: #2d8147; }
+        .card { background: #23272a; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #3e4147; }
+        .channel-list { max-height: 300px; overflow-y: auto; background: #202225; padding: 15px; border-radius: 6px; }
+        .channel-item { display: flex; align-items: center; padding: 8px; border-bottom: 1px solid #2f3136; }
+        input[type="checkbox"] { width: 18px; height: 18px; margin-right: 15px; cursor: pointer; }
+        input[type="text"] { width: 100%; padding: 12px; border-radius: 6px; border: 1px solid #202225; background: #202225; color: white; box-sizing: border-box; }
+        label { font-weight: bold; display: block; margin-bottom: 10px; color: #b9bbbe; }
     </style>
 </head>
 <body>
-    <div class="card">
-        ${user ? `<div style="display:flex; justify-content:space-between; align-items:center;">
-            <span>Logged in as <b>${user.username}</b></span>
-            <a href="/logout" class="logout">Logout</a>
-        </div><hr>` : ''}
+    <div class="container">
+        <div class="header">
+            <h1 style="margin:0;">SHER BOT</h1>
+            ${user ? `<div style="text-align:right;"><small>${user.username}</small><br><a href="/logout" style="color:#ed4245; font-size:12px;">Logout</a></div>` : ''}
+        </div>
         ${content}
     </div>
 </body>
@@ -136,15 +172,18 @@ const ui = (content, user = null) => `
 
 app.get('/', (req, res) => {
     if (req.session.user) return res.redirect('/dashboard');
-    res.send(ui(`
-        <h1 style="color:white; margin-top:0;">SHER BOT Admin</h1>
-        <p>Control the auto-delete and moderation settings for your server.</p>
-        <a href="/login" class="btn">Login with Discord</a>
+    res.send(uiWrapper(`
+        <div style="text-align:center; padding: 40px 0;">
+            <h2>Premium Auto-Delete Management</h2>
+            <p style="color:#b9bbbe;">Securely manage your Discord server cleaning rules from one place.</p>
+            <br>
+            <a href="/login" class="btn">Login with Discord</a>
+        </div>
     `));
 });
 
 app.get('/login', (req, res) => {
-    if (!REDIRECT_URI) return res.send("Error: Missing Redirect URI in Render Settings.");
+    if (!REDIRECT_URI) return res.send("System Error: REDIRECT_URI is missing in Environment Variables.");
     const url = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=identify%20guilds`;
     res.redirect(url);
 });
@@ -152,7 +191,6 @@ app.get('/login', (req, res) => {
 app.get('/callback', async (req, res) => {
     const { code } = req.query;
     if (!code) return res.redirect('/');
-    
     try {
         const tokenRes = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: CLIENT_ID,
@@ -171,66 +209,82 @@ app.get('/callback', async (req, res) => {
         req.session.guilds = guildsRes.data;
         res.redirect('/dashboard');
     } catch (err) {
-        console.error('OAUTH ERROR:', err.response?.data || err.message);
-        res.send(`Login failed. Discord said: ${JSON.stringify(err.response?.data || "Unknown Error")}. Check your Client Secret and Redirect URI.`);
+        console.error("Auth Fail:", err.response?.data || err.message);
+        res.send(`Authentication Failed. Please check your Redirect URI settings.`);
     }
 });
 
 app.get('/dashboard', (req, res) => {
     if (!req.session.user) return res.redirect('/');
     
+    // Filter guilds where user has Administrator permission (0x8)
     const adminGuilds = req.session.guilds.filter(g => (BigInt(g.permissions) & 0x8n) === 0x8n);
     const selectedId = req.query.guild_id;
 
     if (!selectedId) {
-        const list = adminGuilds.map(g => `
-            <div class="channel-row" style="justify-content: space-between;">
-                <span>${g.name}</span>
-                <a href="/dashboard?guild_id=${g.id}" class="btn" style="padding: 5px 12px; font-size: 0.8em;">Manage</a>
+        const guildList = adminGuilds.map(g => `
+            <div class="card" style="display:flex; justify-content:space-between; align-items:center;">
+                <span><b>${g.name}</b></span>
+                <a href="/dashboard?guild_id=${g.id}" class="btn" style="padding: 8px 16px;">Configure</a>
             </div>
-        `).join('') || '<p>You are not an admin in any servers.</p>';
-        return res.send(ui(`<h2>Select a Server</h2>${list}`, req.session.user));
+        `).join('') || '<p>No servers found where you are an Administrator.</p>';
+        return res.send(uiWrapper(`<h3>Select a Server to Manage</h3>${guildList}`, req.session.user));
     }
 
     const discordGuild = client.guilds.cache.get(selectedId);
-    if (!discordGuild) return res.send(ui(`<p>SHER BOT is not in this server! Invite it first.</p><a href="/dashboard" class="btn">Back</a>`, req.session.user));
+    if (!discordGuild) {
+        return res.send(uiWrapper(`
+            <div style="text-align:center;">
+                <h3>Bot Not Found</h3>
+                <p>SHER BOT hasn't been invited to this server yet.</p>
+                <a href="https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&permissions=8&scope=bot%20applications.commands" class="btn" target="_blank">Invite Bot</a>
+                <br><br>
+                <a href="/dashboard" style="color:#aaa;">Back to List</a>
+            </div>
+        `, req.session.user));
+    }
 
     const settings = getSettings(selectedId);
-    const channels = discordGuild.channels.cache.filter(c => c.isTextBased() && !c.isThread());
+    const textChannels = discordGuild.channels.cache.filter(c => c.isTextBased() && !c.isThread());
     
-    const channelHtml = channels.map(c => `
-        <div class="channel-row">
+    const channelInputs = textChannels.map(c => `
+        <div class="channel-item">
             <input type="checkbox" name="channels" value="${c.id}" ${settings.autoDeleteChannels.includes(c.id) ? 'checked' : ''}>
-            #${c.name}
+            <span># ${c.name}</span>
         </div>
     `).join('');
 
-    res.send(ui(`
+    res.send(uiWrapper(`
         <h2>Settings: ${discordGuild.name}</h2>
         <form action="/save" method="POST">
             <input type="hidden" name="guild_id" value="${selectedId}">
             
-            <p><b>Clean these channels:</b></p>
-            ${channelHtml}
-            
-            <hr>
-            <p><b>Filters:</b></p>
-            <div class="channel-row"><input type="checkbox" name="ignoreBots" ${settings.ignoreBots ? 'checked' : ''}> Ignore Bot Messages</div>
-            <div class="channel-row"><input type="checkbox" name="ignoreThreads" ${settings.ignoreThreads ? 'checked' : ''}> Ignore Threads</div>
-            
-            <hr>
-            <p><b>Ignore these Users (IDs, comma separated):</b></p>
-            <input type="text" name="ignoredUsers" value="${settings.ignoredUsers.join(', ')}" placeholder="12345678, 87654321">
-            
-            <br><br>
-            <button type="submit" class="btn" style="background: #3ba55c; width: 100%;">Save Changes</button>
-            <p style="text-align:center;"><a href="/dashboard" style="color:#aaa;">Go Back</a></p>
+            <label>Auto-Delete Channels</label>
+            <div class="channel-list">
+                ${channelInputs}
+            </div>
+
+            <div style="margin-top: 25px;">
+                <label>Filters</label>
+                <div class="card">
+                    <div class="channel-item"><input type="checkbox" name="ignoreBots" ${settings.ignoreBots ? 'checked' : ''}> Ignore Bot Messages</div>
+                    <div class="channel-item"><input type="checkbox" name="ignoreThreads" ${settings.ignoreThreads ? 'checked' : ''}> Ignore Threads (in these channels)</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 25px;">
+                <label>Ignored Users (Comma separated IDs)</label>
+                <input type="text" name="ignoredUsers" value="${settings.ignoredUsers.join(', ')}" placeholder="e.g. 1564321876, 987654321">
+            </div>
+
+            <button type="submit" class="btn btn-save">Save Configuration</button>
+            <p style="text-align:center;"><a href="/dashboard" style="color:#aaa; text-decoration:none;">Cancel and Go Back</a></p>
         </form>
     `, req.session.user));
 });
 
 app.post('/save', (req, res) => {
-    if (!req.session.user) return res.redirect('/');
+    if (!req.session.user) return res.status(403).send('Unauthorized');
     const { guild_id, ignoreBots, ignoreThreads, ignoredUsers } = req.body;
     let { channels } = req.body;
     
@@ -241,11 +295,24 @@ app.post('/save', (req, res) => {
     settings.autoDeleteChannels = channels;
     settings.ignoreBots = !!ignoreBots;
     settings.ignoreThreads = !!ignoreThreads;
-    settings.ignoredUsers = ignoredUsers ? ignoredUsers.split(',').map(id => id.trim()).filter(id => id.length > 0) : [];
+    settings.ignoredUsers = ignoredUsers ? ignoredUsers.split(',').map(id => id.trim()).filter(id => id) : [];
 
     res.redirect(`/dashboard?guild_id=${guild_id}`);
 });
 
-app.get('/logout', (req, res) => { req.session = null; res.redirect('/'); });
+app.get('/logout', (req, res) => { 
+    req.session = null; 
+    res.redirect('/'); 
+});
 
-app.listen(PORT, () => console.log(`Dashboard active on port ${PORT}`));
+// START SERVER (Binding to 0.0.0.0 is critical for Render)
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+    -------------------------------------------
+    🚀 SHER BOT Dashboard Live
+    📍 Port: ${PORT}
+    📍 Redirect URI: ${REDIRECT_URI}
+    📍 Health: http://0.0.0.0:${PORT}/health
+    -------------------------------------------
+    `);
+});
