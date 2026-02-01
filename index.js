@@ -4,260 +4,258 @@ const {
     GatewayIntentBits, 
     Partials, 
     ActivityType,
-    EmbedBuilder
+    PermissionFlagsBits
 } = require('discord.js');
 const express = require('express');
 const session = require('cookie-session');
 const bodyParser = require('body-parser');
+const crypto = require('crypto');
 
 // --- CONFIGURATION ---
 const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     RAW_PASSWORDS: process.env.GUILD_PASSWORDS || "", 
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-pro-v1'
+    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-lock-secure-v2'
 };
 
+// Map to store passwords (GuildID -> Password)
 const serverPasswords = new Map();
-if (CONFIG.RAW_PASSWORDS) {
-    CONFIG.RAW_PASSWORDS.split(',').forEach(pair => {
-        const [id, pass] = pair.split(':');
-        if (id && pass) serverPasswords.set(id.trim(), pass.trim());
-    });
-}
 
-// --- DATA MANAGEMENT (Memory Store) ---
+// Parse passwords from Render Environment Variables
+const loadPasswords = () => {
+    if (CONFIG.RAW_PASSWORDS) {
+        CONFIG.RAW_PASSWORDS.split(',').forEach(pair => {
+            const [id, pass] = pair.split(':');
+            if (id && pass) serverPasswords.set(id.trim(), pass.trim());
+        });
+    }
+};
+loadPasswords();
+
+// Helper for generating random setup keys for new servers
+const generateRandomPass = () => `SHER-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+// --- DATABASE (In-Memory) ---
 const db = new Map();
 const getGuildSettings = (guildId) => {
     if (!db.has(guildId)) {
         db.set(guildId, {
             autoDeleteChannels: [],
-            deleteDelay: 1200, // Default 1.2s
-            ignoreBots: false,
-            ignoreThreads: false,
-            ignoredUsers: [],
+            deleteDelay: 1200,
+            ignoreBots: true,
+            ignoreThreads: true,
             antiLink: false,
             blacklist: [],
-            logChannel: null,
-            autoResponses: {} // { "trigger": "reply" }
         });
     }
     return db.get(guildId);
 };
 
-// --- DISCORD BOT CLIENT ---
+// --- DISCORD BOT ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers
-    ],
-    partials: [Partials.Channel]
+    ]
 });
 
 client.once('ready', () => {
-    console.log(`[BOT] Pro Active: ${client.user.tag}`);
-    client.user.setActivity('Protecting Servers', { type: ActivityType.Shield });
+    console.log(`[BOT] SHER LOCK Online as ${client.user.tag}`);
+    client.user.setActivity('Dashboard Active', { type: ActivityType.Watching });
+    
+    // Assign random passwords to any servers that don't have one in ENV yet
+    client.guilds.cache.forEach(guild => {
+        if (!serverPasswords.has(guild.id)) {
+            const temp = generateRandomPass();
+            serverPasswords.set(guild.id, temp);
+            console.log(`[SETUP] Generated Temp Pass for ${guild.name}: ${temp}`);
+        }
+    });
+});
+
+// Notify owner on join with their random password
+client.on('guildCreate', async (guild) => {
+    const tempPass = generateRandomPass();
+    serverPasswords.set(guild.id, tempPass);
+    try {
+        const owner = await guild.fetchOwner();
+        owner.send(`🛡️ **SHER LOCK Setup Required**\nTo access your dashboard for **${guild.name}**, use:\n**Server ID:** \`${guild.id}\` \n**Password:** \`${tempPass}\`\n\nYou can change this password in the dashboard.`);
+    } catch (e) { console.log("Could not DM owner."); }
 });
 
 client.on('messageCreate', async (msg) => {
     if (!msg.guild || msg.author.id === client.user.id) return;
+
+    // Safety Command for Owners to retrieve password
+    if (msg.content === '!getpass' && msg.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        const pass = serverPasswords.get(msg.guild.id);
+        return msg.reply({ content: `The dashboard password for this server is: ||${pass}||` });
+    }
+
+    const s = getGuildSettings(msg.guild.id);
+    let trigger = false;
+
+    // Filter Logic
+    if (msg.author.bot && s.ignoreBots) return;
+    if (msg.channel.isThread() && s.ignoreThreads) return;
     
-    const settings = getGuildSettings(msg.guild.id);
-    const content = msg.content.toLowerCase();
-    let shouldDelete = false;
-    let reason = "Auto-Delete Channel";
+    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) trigger = true;
+    if (s.blacklist.some(word => msg.content.toLowerCase().includes(word.toLowerCase()))) trigger = true;
+    if (s.autoDeleteChannels.includes(msg.channel.id)) trigger = true;
 
-    // 1. Check Ignored Users
-    if (settings.ignoredUsers.includes(msg.author.id)) return;
-
-    // 2. Anti-Link Feature
-    if (settings.antiLink && (msg.content.includes('discord.gg/') || msg.content.includes('http'))) {
-        shouldDelete = true;
-        reason = "Anti-Link Protection";
-    }
-
-    // 3. Blacklist Feature
-    if (settings.blacklist.some(word => content.includes(word.toLowerCase()))) {
-        shouldDelete = true;
-        reason = "Blacklisted Keyword";
-    }
-
-    // 4. Auto-Delete Channel Logic
-    if (settings.autoDeleteChannels.includes(msg.channel.id)) {
-        if (settings.ignoreBots && msg.author.bot) return;
-        if (settings.ignoreThreads && msg.channel.isThread()) return;
-        shouldDelete = true;
-    }
-
-    // 5. Auto-Response Logic (Non-deleting)
-    if (!shouldDelete && settings.autoResponses[content]) {
-        return msg.reply(settings.autoResponses[content]);
-    }
-
-    // Execution
-    if (shouldDelete) {
+    if (trigger) {
         setTimeout(() => {
-            if (msg.deletable) {
-                msg.delete().catch(() => {});
-                
-                // Logging Feature
-                if (settings.logChannel) {
-                    const logChan = msg.guild.channels.cache.get(settings.logChannel);
-                    if (logChan) {
-                        logChan.send(`🗑️ **Deleted:** "${msg.content.substring(0, 100)}" from <@${msg.author.id}> in <#${msg.channel.id}>. \n**Reason:** ${reason}`).catch(() => {});
-                    }
-                }
-            }
-        }, settings.deleteDelay);
+            msg.delete().catch(() => {});
+        }, s.deleteDelay);
     }
 });
 
-client.login(CONFIG.TOKEN).catch(e => console.error('[BOT] Login Failed:', e.message));
+client.login(CONFIG.TOKEN).catch(err => console.error("Discord Login Error:", err));
 
-// --- WEB DASHBOARD ---
+// --- WEB INTERFACE ---
 const app = express();
-app.set('trust proxy', 1);
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(session({
-    name: 'sher_session',
-    keys: [CONFIG.SESSION_SECRET],
-    maxAge: 24 * 60 * 60 * 1000
+app.use(session({ 
+    name: 'sher_lock_session',
+    keys: [CONFIG.SESSION_SECRET], 
+    maxAge: 24 * 60 * 60 * 1000 
 }));
 
-const LAYOUT = (body, showLogout = false) => `
+const UI = (content, authed = false) => `
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SHER PRO DASHBOARD</title>
+    <title>SHER LOCK PRO</title>
     <style>
-        :root { --primary: #5865F2; --bg: #121212; --card: #1e1e1e; --text: #FFFFFF; --muted: #999; --accent: #3BA55C; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; justify-content: center; }
-        .wrapper { width: 100%; max-width: 900px; background: var(--card); padding: 30px; border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); }
-        .nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; margin-bottom: 25px; padding-bottom: 15px; }
-        .btn { background: var(--primary); color: #fff; padding: 12px 20px; border: none; border-radius: 8px; cursor: pointer; text-decoration: none; font-weight: bold; transition: 0.2s; display: inline-block; width: 100%; box-sizing: border-box; text-align: center; }
-        .save-btn { background: var(--accent); margin-top: 20px; font-size: 1.1em; }
-        .section { background: #252525; padding: 20px; border-radius: 10px; margin-bottom: 20px; border-left: 4px solid var(--primary); }
-        .channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; max-height: 200px; overflow-y: auto; padding: 10px; background: #181818; border-radius: 5px; }
-        input, select, textarea { width: 100%; padding: 12px; border-radius: 5px; border: 1px solid #333; background: #181818; color: #fff; margin-bottom: 15px; box-sizing: border-box; }
-        label { display: block; margin-bottom: 8px; font-weight: bold; color: var(--muted); }
-        .badge { background: var(--primary); font-size: 0.7em; padding: 2px 8px; border-radius: 10px; margin-left: 10px; }
+        body { background: #0f172a; color: #f8fafc; font-family: -apple-system, sans-serif; display: flex; justify-content: center; padding: 20px; margin: 0; }
+        .card { background: #1e293b; padding: 30px; border-radius: 12px; width: 100%; max-width: 600px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); box-sizing: border-box; }
+        input[type="text"], input[type="password"], input[type="number"], textarea { 
+            width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: 1px solid #334155; 
+            background: #0f172a; color: white; box-sizing: border-box; font-size: 16px;
+        }
+        .btn { background: #3b82f6; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; font-size: 16px; }
+        .btn:hover { background: #2563eb; }
+        .section { margin-bottom: 25px; padding-bottom: 15px; border-bottom: 1px solid #334155; }
+        label { font-weight: bold; display: block; margin-top: 10px; color: #94a3b8; }
+        .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+        .row input { width: auto; margin: 0; }
+        .channel-list { max-height: 180px; overflow-y: auto; background: #0f172a; padding: 10px; border-radius: 6px; border: 1px solid #334155; }
+        .logout { color: #ef4444; text-decoration: none; font-size: 0.9em; display: block; text-align: center; margin-top: 20px; }
     </style>
 </head>
-<body>
-    <div class="wrapper">
-        <div class="nav">
-            <h2 style="margin:0">SHER LOCK <span class="badge">PRO</span></h2>
-            ${showLogout ? '<a href="/logout" style="color:#F04747; text-decoration:none; font-weight:bold">Logout</a>' : ''}
-        </div>
-        ${body}
-    </div>
-</body>
+<body><div class="card">${content}</div></body>
 </html>
 `;
 
 app.get('/', (req, res) => {
-    if (req.session.authedGuild) return res.redirect('/dashboard');
-    res.send(LAYOUT(`
-        <div style="text-align:center;">
-            <h1>Server Access</h1>
-            <p style="color:var(--muted)">Manage your server's protection and automation.</p>
-            <form action="/login" method="POST" style="text-align:left; max-width: 400px; margin: auto;">
-                <label>Discord Server ID</label>
-                <input type="text" name="guildId" placeholder="Paste ID here..." required>
-                <label>Access Password</label>
-                <input type="password" name="password" placeholder="••••••••" required>
-                <button type="submit" class="btn">Unlock Dashboard</button>
-            </form>
-        </div>
+    if (req.session.guildId) return res.redirect('/dashboard');
+    res.send(UI(`
+        <h2 style="text-align:center">SHER LOCK Access</h2>
+        <p style="text-align:center; color: #94a3b8;">Enter Server ID and Password to manage settings.</p>
+        <form action="/login" method="POST">
+            <label>Server ID</label>
+            <input type="text" name="gid" placeholder="e.g. 1234567890" required>
+            <label>Password</label>
+            <input type="password" name="pass" placeholder="••••••••" required>
+            <button class="btn">Login</button>
+        </form>
     `));
 });
 
 app.post('/login', (req, res) => {
-    const { guildId, password } = req.body;
-    const correctPass = serverPasswords.get(guildId);
-    if (correctPass && password === correctPass) {
-        req.session.authedGuild = guildId;
+    const { gid, pass } = req.body;
+    if (serverPasswords.get(gid) === pass) {
+        req.session.guildId = gid;
         res.redirect('/dashboard');
     } else {
-        res.send(LAYOUT(`<div style="text-align:center"><p style="color:#F04747">Access Denied.</p><a href="/" class="btn">Try Again</a></div>`));
+        res.send(UI(`<h3>Invalid Credentials</h3><a href="/" class="btn">Back to Login</a>`));
     }
 });
 
 app.get('/dashboard', (req, res) => {
-    const gid = req.session.authedGuild;
+    const gid = req.session.guildId;
     if (!gid) return res.redirect('/');
     
-    const discordGuild = client.guilds.cache.get(gid);
-    if (!discordGuild) return res.send(LAYOUT(`<div style="text-align:center"><h3>Bot is not in Server ${gid}</h3><a href="/logout" class="btn">Logout</a></div>`));
+    const guild = client.guilds.cache.get(gid);
+    if (!guild) return res.send(UI(`<h3>Bot not found in server ${gid}</h3><a href="/logout" class="logout">Logout</a>`));
 
     const s = getGuildSettings(gid);
-    const channels = discordGuild.channels.cache.filter(c => c.isTextBased() && !c.isThread());
+    const textChannels = guild.channels.cache.filter(c => c.isTextBased() && !c.isThread());
 
-    res.send(LAYOUT(`
-        <div style="margin-bottom:20px;">
-            <h3 style="margin:0">⚙️ Settings for ${discordGuild.name}</h3>
-        </div>
-
+    res.send(UI(`
+        <h2>Settings: ${guild.name}</h2>
         <form action="/save" method="POST">
             <div class="section">
-                <label>⏱️ Deletion Delay (ms)</label>
-                <input type="number" name="delay" value="${s.deleteDelay}" step="100" min="0">
-                <p style="font-size:0.8em; color:var(--muted)">1000ms = 1 second. Set to 0 for instant.</p>
+                <label>🔑 Dashboard Password</label>
+                <input type="text" name="newPass" value="${serverPasswords.get(gid)}">
+                <small style="color: #64748b">Change this to your preferred access key.</small>
             </div>
-
+            
             <div class="section">
                 <label>💬 Auto-Delete Channels</label>
-                <div class="channel-grid">
-                    ${channels.map(c => `<label style="color:white; font-weight:normal;"><input type="checkbox" name="chans" value="${c.id}" ${s.autoDeleteChannels.includes(c.id) ? 'checked' : ''} style="width:auto"> #${c.name}</label>`).join('')}
+                <div class="channel-list">
+                    ${textChannels.map(c => `
+                        <div class="row">
+                            <input type="checkbox" name="chans" value="${c.id}" ${s.autoDeleteChannels.includes(c.id) ? 'checked' : ''}>
+                            <span>#${c.name}</span>
+                        </div>
+                    `).join('')}
                 </div>
             </div>
 
             <div class="section">
-                <label>🛡️ Security & Filtering</label>
-                <label style="font-weight:normal"><input type="checkbox" name="antiLink" ${s.antiLink ? 'checked' : ''} style="width:auto"> Anti-Link (Delete all URLs/Invites)</label>
-                <br>
-                <label>Blacklisted Words (Comma separated)</label>
-                <textarea name="blacklist" rows="2" placeholder="badword1, scam, link">${s.blacklist.join(', ')}</textarea>
+                <label>⚙️ General Options</label>
+                <div class="row">
+                    <input type="checkbox" name="ignoreThreads" ${s.ignoreThreads ? 'checked' : ''}>
+                    <span>Ignore Threads</span>
+                </div>
+                <div class="row">
+                    <input type="checkbox" name="ignoreBots" ${s.ignoreBots ? 'checked' : ''}>
+                    <span>Ignore Bots</span>
+                </div>
+                <div class="row">
+                    <input type="checkbox" name="antiLink" ${s.antiLink ? 'checked' : ''}>
+                    <span>Anti-Link Protection</span>
+                </div>
             </div>
 
             <div class="section">
-                <label>📜 Logging & Exceptions</label>
-                <label>Log Channel ID (Optional)</label>
-                <input type="text" name="logChannel" value="${s.logChannel || ''}" placeholder="Paste channel ID for logs">
+                <label>⏱️ Deletion Delay (ms)</label>
+                <input type="number" name="delay" value="${s.deleteDelay}" min="0">
                 
-                <label>Ignored User IDs (Whitelist)</label>
-                <input type="text" name="iu" value="${s.ignoredUsers.join(', ')}" placeholder="ID1, ID2">
-                
-                <label style="font-weight:normal"><input type="checkbox" name="ib" ${s.ignoreBots ? 'checked' : ''} style="width:auto"> Ignore Other Bots</label>
+                <label>🚫 Blacklist Words (comma separated)</label>
+                <textarea name="words" placeholder="scam, badword, link">${s.blacklist.join(', ')}</textarea>
             </div>
 
-            <button type="submit" class="btn save-btn">Save Pro Configuration</button>
+            <button class="btn">Save Configuration</button>
         </form>
-    `, true));
+        <a href="/logout" class="logout">Logout from Server Dashboard</a>
+    `));
 });
 
 app.post('/save', (req, res) => {
-    const gid = req.session.authedGuild;
+    const gid = req.session.guildId;
     if (!gid) return res.sendStatus(403);
 
-    const { delay, ib, antiLink, blacklist, logChannel, iu } = req.body;
-    let { chans } = req.body;
-    if (!chans) chans = [];
-    if (!Array.isArray(chans)) chans = [chans];
-    
     const s = getGuildSettings(gid);
-    s.autoDeleteChannels = chans;
-    s.deleteDelay = parseInt(delay) || 0;
-    s.ignoreBots = !!ib; 
-    s.antiLink = !!antiLink;
-    s.logChannel = logChannel || null;
-    s.blacklist = blacklist ? blacklist.split(',').map(i => i.trim()).filter(i => i) : [];
-    s.ignoredUsers = iu ? iu.split(',').map(i => i.trim()).filter(i => i) : [];
+    s.deleteDelay = parseInt(req.body.delay) || 0;
+    s.antiLink = req.body.antiLink === 'on';
+    s.ignoreThreads = req.body.ignoreThreads === 'on';
+    s.ignoreBots = req.body.ignoreBots === 'on';
+    s.blacklist = req.body.words ? req.body.words.split(',').map(w => w.trim()).filter(w => w) : [];
     
+    let selectedChans = req.body.chans || [];
+    if (!Array.isArray(selectedChans)) selectedChans = [selectedChans];
+    s.autoDeleteChannels = selectedChans;
+    
+    if (req.body.newPass) {
+        serverPasswords.set(gid, req.body.newPass.trim());
+    }
+
     res.redirect('/dashboard');
 });
 
@@ -267,5 +265,5 @@ app.get('/logout', (req, res) => {
 });
 
 app.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log(`[SYS] Pro Dashboard active on port ${CONFIG.PORT}`);
+    console.log(`[SYS] Dashboard listening on port ${CONFIG.PORT}`);
 });
