@@ -23,7 +23,7 @@ const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     RAW_PASSWORDS: process.env.GUILD_PASSWORDS || "", 
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-lock-secret-v3'
+    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-lock-ultimate-v4'
 };
 
 const serverPasswords = new Map();
@@ -42,6 +42,7 @@ const db = new Map();
 const getGuildSettings = (guildId) => {
     if (!db.has(guildId)) {
         db.set(guildId, {
+            // MODERATION FEATURES (The "Before" Features)
             autoDeleteChannels: [],
             deleteDelay: 1200,
             ignoreBots: true,
@@ -51,18 +52,22 @@ const getGuildSettings = (guildId) => {
             logChannelId: "",
             modRoleId: "",
             customNickname: "SHER LOCK",
-            // Ticket System Settings
+            
+            // TICKET SYSTEM
             ticketCategoryId: "",
             supportRoleId: "",
-            // Dynamic UI Settings
-            panelTitle: "🛡️ SHER LOCK Support",
-            panelDesc: "Select a category from the menu below to open a ticket.",
+            ticketMessage: "Welcome to support! How can we help you?",
+            
+            // DYNAMIC UI (The "Create as many as you want" logic)
+            panelTitle: "🛡️ SHER LOCK SUPPORT",
+            panelDesc: "Click a button below or use the menu to open a ticket.",
             panelImage: "",
-            panelColor: "#2B2D31",
-            ticketLabel: "Open Support",
-            appealLabel: "Ban Appeal",
-            ticketMessage: "Welcome to support! A staff member will be with you shortly.",
-            appealMessage: "Submit your ban appeal here. Please be honest."
+            panelColor: "#3b82f6",
+            // Array of custom buttons/options
+            customOptions: [
+                { id: 'open_ticket', label: 'General Support', emoji: '🎫' },
+                { id: 'open_appeal', label: 'Ban Appeal', emoji: '⚖️' }
+            ]
         });
     }
     return db.get(guildId);
@@ -79,116 +84,94 @@ const client = new Client({
 });
 
 client.once('ready', () => {
-    console.log(`[BOT] SHER LOCK Online as ${client.user.tag}`);
-    client.user.setActivity('SHER LOCK 🛡️', { type: ActivityType.Watching });
+    console.log(`[BOT] SHER LOCK PRO Online as ${client.user.tag}`);
+    client.user.setActivity('Protecting Servers', { type: ActivityType.Watching });
 });
 
-// Ticket Interaction Handler
+// Interaction Handler
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.guildId) return;
     const s = getGuildSettings(interaction.guildId);
 
-    // Dropdown or Button Handling
-    if ((interaction.isStringSelectMenu() && interaction.customId === 'ticket_select') || interaction.isButton()) {
+    // Create Ticket Logic
+    const isTicketOpening = (interaction.isButton() && interaction.customId.startsWith('open_')) || 
+                           (interaction.isStringSelectMenu() && interaction.customId === 'ticket_select');
+
+    if (isTicketOpening) {
         const type = interaction.values ? interaction.values[0] : interaction.customId;
-        
-        // Allowed ticket opening types
-        const ticketTypes = ['open_ticket', 'open_appeal', 'partnership'];
-        // Allowed management types
-        const managementTypes = ['claim_ticket', 'close_ticket', 'confirm_close', 'delete_ticket'];
+        if (!s.ticketCategoryId) return interaction.reply({ content: "Ticket category not set in dashboard!", ephemeral: true });
 
-        if (!ticketTypes.includes(type) && !managementTypes.includes(type)) return;
+        const channel = await interaction.guild.channels.create({
+            name: `${type.replace('open_', '')}-${interaction.user.username}`,
+            type: ChannelType.GuildText,
+            parent: s.ticketCategoryId,
+            permissionOverwrites: [
+                { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                { id: s.supportRoleId || interaction.guild.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+            ]
+        });
 
-        // --- OPENING A TICKET ---
-        if (ticketTypes.includes(type)) {
-            if (!s.ticketCategoryId) return interaction.reply({ content: "Ticket system not configured.", ephemeral: true });
+        const embed = new EmbedBuilder()
+            .setTitle(`🛡️ ${type.toUpperCase().replace('OPEN_', '')}`)
+            .setDescription(s.ticketMessage)
+            .setColor(0x3b82f6);
 
-            try {
-                const channel = await interaction.guild.channels.create({
-                    name: `${type.replace('open_', '')}-${interaction.user.username}`,
-                    type: ChannelType.GuildText,
-                    parent: s.ticketCategoryId,
-                    permissionOverwrites: [
-                        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
-                        { id: s.supportRoleId || interaction.guild.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-                    ]
-                });
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close').setStyle(ButtonStyle.Danger)
+        );
 
-                const embed = new EmbedBuilder()
-                    .setTitle(`🛡️ ${type.toUpperCase().replace('OPEN_', '')}`)
-                    .setDescription(type === 'open_appeal' ? s.appealMessage : s.ticketMessage)
-                    .setColor(0x3b82f6);
-
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim').setEmoji('🙋').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId('close_ticket').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Secondary)
-                );
-
-                await channel.send({ content: `<@&${s.supportRoleId}> | <@${interaction.user.id}>`, embeds: [embed], components: [row] });
-                return interaction.reply({ content: `Ticket created: ${channel}`, ephemeral: true });
-            } catch (err) {
-                console.error(err);
-                return interaction.reply({ content: "Error creating ticket. Check bot permissions.", ephemeral: true });
-            }
-        }
+        await channel.send({ content: `<@&${s.supportRoleId}> <@${interaction.user.id}>`, embeds: [embed], components: [row] });
+        return interaction.reply({ content: `Ticket created: ${channel}`, ephemeral: true });
     }
 
-    // --- BUTTON LOGIC (CLAIM/CLOSE/DELETE) ---
+    // Staff Actions
     if (interaction.isButton()) {
         if (interaction.customId === 'claim_ticket') {
-            await interaction.channel.send({ content: `🛡️ Ticket claimed by <@${interaction.user.id}>` });
-            return interaction.deferUpdate();
+            return interaction.reply({ content: `🙋 Ticket claimed by <@${interaction.user.id}>` });
         }
         if (interaction.customId === 'close_ticket') {
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('confirm_close').setLabel('Confirm Close').setStyle(ButtonStyle.Danger)
-            );
-            return interaction.reply({ content: "Confirm closure?", components: [row] });
-        }
-        if (interaction.customId === 'confirm_close') {
             await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false });
-            if (s.logChannelId) {
-                const log = interaction.guild.channels.cache.get(s.logChannelId);
-                if (log) log.send(`📜 Ticket ${interaction.channel.name} was closed.`);
-            }
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('delete_ticket').setLabel('Delete').setStyle(ButtonStyle.Danger)
-            );
-            return interaction.update({ content: "Ticket Closed.", components: [row] });
-        }
-        if (interaction.customId === 'delete_ticket') {
-            await interaction.channel.delete().catch(() => {});
+            return interaction.reply({ content: "🔒 Ticket closed. Use `!delete` to remove channel." });
         }
     }
 });
 
+// Auto-Mod & Deletion Logic (The Restored Features)
 client.on('messageCreate', async (msg) => {
     if (!msg.guild || msg.author.bot) return;
     const s = getGuildSettings(msg.guild.id);
-    const isAuthorized = msg.member.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && msg.member.roles.cache.has(s.modRoleId));
 
+    // Admin commands
+    const isAuthorized = msg.member.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && msg.member.roles.cache.has(s.modRoleId));
+    
     if (msg.content === '!setup-tickets' && isAuthorized) {
         const embed = new EmbedBuilder()
             .setTitle(s.panelTitle)
             .setDescription(s.panelDesc)
-            .setColor(s.panelColor || '#3b82f6');
-        
+            .setColor(s.panelColor);
         if (s.panelImage) embed.setImage(s.panelImage);
 
-        const select = new StringSelectMenuBuilder()
-            .setCustomId('ticket_select')
-            .setPlaceholder('Choose a ticket category...')
-            .addOptions(
-                new StringSelectMenuOptionBuilder().setLabel(s.ticketLabel).setValue('open_ticket').setEmoji('🎫'),
-                new StringSelectMenuOptionBuilder().setLabel(s.appealLabel).setValue('open_appeal').setEmoji('⚖️'),
-                new StringSelectMenuOptionBuilder().setLabel('Partnership').setValue('partnership').setEmoji('🤝')
-            );
-
-        const row = new ActionRowBuilder().addComponents(select);
+        const row = new ActionRowBuilder();
+        s.customOptions.forEach(opt => {
+            row.addComponents(new ButtonBuilder().setCustomId(opt.id).setLabel(opt.label).setEmoji(opt.emoji).setStyle(ButtonStyle.Secondary));
+        });
 
         await msg.channel.send({ embeds: [embed], components: [row] });
-        return msg.delete().catch(() => {});
+        return msg.delete().catch(()=>{});
+    }
+
+    // AUTO-MODERATION ENGINE
+    let shouldDelete = false;
+
+    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) shouldDelete = true;
+    if (s.blacklist.some(word => msg.content.toLowerCase().includes(word.toLowerCase()))) shouldDelete = true;
+    if (s.autoDeleteChannels.includes(msg.channel.id)) shouldDelete = true;
+
+    if (shouldDelete) {
+        if (msg.channel.isThread() && s.ignoreThreads) return;
+        setTimeout(() => msg.delete().catch(()=>{}), s.deleteDelay);
     }
 });
 
@@ -199,32 +182,29 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({ keys: [CONFIG.SESSION_SECRET], maxAge: 24 * 60 * 60 * 1000 }));
 
-const UI = (content, activeTab = 'settings') => `
+const UI = (content, activeTab = 'main') => `
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SHER LOCK Dashboard</title>
     <style>
-        body { background: #0f172a; color: #f8fafc; font-family: sans-serif; display: flex; justify-content: center; padding: 20px; margin: 0; }
-        .card { background: #1e293b; padding: 30px; border-radius: 12px; width: 100%; max-width: 800px; box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid #334155; padding-bottom: 10px; overflow-x: auto; }
-        .tab { cursor: pointer; padding: 10px 20px; border-radius: 6px; text-decoration: none; color: #94a3b8; font-weight: bold; white-space: nowrap; }
+        body { background: #0f172a; color: #f8fafc; font-family: sans-serif; padding: 20px; display: flex; justify-content: center; }
+        .card { background: #1e293b; padding: 25px; border-radius: 12px; width: 100%; max-width: 800px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
+        .tab { color: #94a3b8; text-decoration: none; padding: 8px 15px; border-radius: 5px; }
         .tab.active { background: #3b82f6; color: white; }
-        input, textarea, select { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box; }
-        .btn { background: #3b82f6; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 15px; }
-        .section { margin-bottom: 20px; padding: 15px; background: #1a2233; border-radius: 8px; border-left: 4px solid #3b82f6; }
-        label { font-weight: bold; color: #94a3b8; font-size: 0.85em; text-transform: uppercase; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+        .section { background: #1a2233; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #3b82f6; }
+        input, textarea { width: 100%; padding: 10px; margin: 8px 0; background: #0f172a; color: white; border: 1px solid #334155; border-radius: 5px; box-sizing: border-box; }
+        .btn { background: #3b82f6; color: white; border: none; padding: 12px; border-radius: 5px; cursor: pointer; width: 100%; font-weight: bold; }
+        .btn-add { background: #10b981; margin-top: 10px; font-size: 0.8em; }
+        .opt-row { display: grid; grid-template-columns: 1fr 1fr 40px; gap: 10px; align-items: center; margin-bottom: 5px; }
     </style>
 </head>
 <body>
     <div class="card">
         <div class="tabs">
-            <a href="/dashboard" class="tab ${activeTab === 'settings' ? 'active' : ''}">🛡️ Main</a>
-            <a href="/tickets" class="tab ${activeTab === 'tickets' ? 'active' : ''}">🎫 Ticket Config</a>
-            <a href="/editor" class="tab ${activeTab === 'editor' ? 'active' : ''}">🎨 Panel Designer</a>
+            <a href="/dashboard" class="tab ${activeTab==='main'?'active':''}">🛡️ Moderation</a>
+            <a href="/tickets" class="tab ${activeTab==='tickets'?'active':''}">🎫 Tickets</a>
         </div>
         ${content}
     </div>
@@ -232,106 +212,92 @@ const UI = (content, activeTab = 'settings') => `
 </html>
 `;
 
-app.get('/', (req, res) => {
-    res.send(`<body style="background:#0f172a; color:white; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh;">
-        <form action="/login" method="POST" style="background:#1e293b; padding:40px; border-radius:12px; width:300px;">
-            <h2 style="text-align:center">🛡️ SHER LOCK</h2>
-            <input type="text" name="gid" placeholder="Server ID" style="width:100%; padding:10px; margin:10px 0; border-radius:4px; border:none;" required>
-            <input type="password" name="pass" placeholder="Dashboard Password" style="width:100%; padding:10px; margin:10px 0; border-radius:4px; border:none;" required>
-            <button style="width:100%; padding:10px; background:#3b82f6; color:white; border:none; border-radius:4px; cursor:pointer;">Login</button>
-        </form>
-    </body>`);
-});
-
-app.post('/login', (req, res) => {
-    if (serverPasswords.get(req.body.gid) === req.body.pass) { req.session.guildId = req.body.gid; res.redirect('/dashboard'); }
-    else res.send("Denied Access. <a href='/'>Try again</a>");
-});
+app.get('/', (req, res) => res.send('<form action="/login" method="POST">ID: <input name="gid"> Pass: <input name="pass" type="password"><button>Login</button></form>'));
+app.post('/login', (req, res) => { if(serverPasswords.get(req.body.gid) === req.body.pass) { req.session.gid = req.body.gid; res.redirect('/dashboard'); } else res.send("Fail"); });
 
 app.get('/dashboard', (req, res) => {
-    const s = getGuildSettings(req.session.guildId);
-    if (!req.session.guildId) return res.redirect('/');
+    const s = getGuildSettings(req.session.gid);
+    const guild = client.guilds.cache.get(req.session.gid);
+    if(!guild) return res.redirect('/');
     res.send(UI(`
-        <h2>Main Settings</h2>
-        <form action="/save" method="POST">
-            <div class="section"><label>Bot Nickname</label><input type="text" name="nickname" value="${s.customNickname}"></div>
-            <div class="section"><label>Mod Role ID</label><input type="text" name="modRole" value="${s.modRoleId}"></div>
-            <div class="section"><label>Log Channel ID</label><input type="text" name="logChan" value="${s.logChannelId}"></div>
-            <button class="btn">Save Main Settings</button>
+        <h2>Moderation Settings (Restored)</h2>
+        <form action="/save-mod" method="POST">
+            <div class="section">
+                <label>Auto-Delete Channels</label>
+                ${guild.channels.cache.filter(c => c.isTextBased()).map(c => `
+                    <div><input type="checkbox" name="chans" value="${c.id}" ${s.autoDeleteChannels.includes(c.id)?'checked':''} style="width:auto"> ${c.name}</div>
+                `).join('')}
+            </div>
+            <div class="section">
+                <label>Blacklist Words (comma separated)</label>
+                <textarea name="words">${s.blacklist.join(', ')}</textarea>
+                <label>Delete Delay (ms)</label>
+                <input type="number" name="delay" value="${s.deleteDelay}">
+                <label>Anti-Link</label>
+                <input type="checkbox" name="antiLink" ${s.antiLink?'checked':''} style="width:auto">
+            </div>
+            <button class="btn">Save Moderation</button>
         </form>
-    `, 'settings'));
+    `, 'main'));
 });
 
 app.get('/tickets', (req, res) => {
-    const s = getGuildSettings(req.session.guildId);
-    if (!req.session.guildId) return res.redirect('/');
+    const s = getGuildSettings(req.session.gid);
     res.send(UI(`
-        <h2>Ticket Logic</h2>
+        <h2>Ticket System Designer</h2>
         <form action="/save-tickets" method="POST">
-            <div class="section"><label>Category ID</label><input type="text" name="catId" value="${s.ticketCategoryId}"></div>
-            <div class="section"><label>Support Role ID</label><input type="text" name="supportRole" value="${s.supportRoleId}"></div>
             <div class="section">
-                <label>Ticket Open Message</label><textarea name="tMsg">${s.ticketMessage}</textarea>
-                <label>Appeal Open Message</label><textarea name="aMsg">${s.appealMessage}</textarea>
+                <label>Category ID</label><input name="catId" value="${s.ticketCategoryId}">
+                <label>Support Role ID</label><input name="supportRole" value="${s.supportRoleId}">
             </div>
-            <button class="btn">Save Logic</button>
+            <div class="section">
+                <label>Embed Title</label><input name="pTitle" value="${s.panelTitle}">
+                <label>Embed Description</label><textarea name="pDesc">${s.panelDesc}</textarea>
+            </div>
+            <div class="section">
+                <label>Custom Buttons (Label | Emoji | Custom ID)</label>
+                <div id="options">
+                    ${s.customOptions.map((o, i) => `
+                        <div class="opt-row">
+                            <input name="labels[]" value="${o.label}" placeholder="Label">
+                            <input name="emojis[]" value="${o.emoji}" placeholder="Emoji">
+                            <input name="ids[]" value="${o.id}" placeholder="open_xxx">
+                        </div>
+                    `).join('')}
+                </div>
+                <p style="font-size: 0.8em; color: #94a3b8;">* Note: Start IDs with <b>open_</b> to trigger ticket opening.</p>
+            </div>
+            <button class="btn">Save & Update Panel</button>
         </form>
     `, 'tickets'));
 });
 
-app.get('/editor', (req, res) => {
-    const s = getGuildSettings(req.session.guildId);
-    if (!req.session.guildId) return res.redirect('/');
-    res.send(UI(`
-        <h2>🎨 Panel Designer</h2>
-        <p style="color:#94a3b8; font-size:0.8em;">Edit how the <b>!setup-tickets</b> embed looks.</p>
-        <form action="/save-editor" method="POST">
-            <div class="section">
-                <label>Embed Title</label><input type="text" name="pTitle" value="${s.panelTitle}">
-                <label>Embed Description</label><textarea name="pDesc" rows="4">${s.panelDesc}</textarea>
-            </div>
-            <div class="grid">
-                <div class="section"><label>Embed Color (Hex)</label><input type="text" name="pColor" value="${s.panelColor}"></div>
-                <div class="section"><label>Banner Image URL</label><input type="text" name="pImage" value="${s.panelImage}"></div>
-            </div>
-            <div class="section" style="border-left-color: #f59e0b;">
-                <label>Menu Options Text</label>
-                <div class="grid">
-                    <input type="text" name="lTicket" value="${s.ticketLabel}" placeholder="Support Label">
-                    <input type="text" name="lAppeal" value="${s.appealLabel}" placeholder="Appeal Label">
-                </div>
-            </div>
-            <button class="btn" style="background:#8b5cf6;">Update Visuals</button>
-        </form>
-    `, 'editor'));
-});
-
-app.post('/save', (req, res) => {
-    const s = getGuildSettings(req.session.guildId);
-    s.customNickname = req.body.nickname;
-    s.modRoleId = req.body.modRole;
-    s.logChannelId = req.body.logChan;
+app.post('/save-mod', (req, res) => {
+    const s = getGuildSettings(req.session.gid);
+    s.autoDeleteChannels = Array.isArray(req.body.chans) ? req.body.chans : (req.body.chans ? [req.body.chans] : []);
+    s.blacklist = req.body.words.split(',').map(w => w.trim()).filter(w => w);
+    s.deleteDelay = parseInt(req.body.delay);
+    s.antiLink = req.body.antiLink === 'on';
     res.redirect('/dashboard');
 });
 
 app.post('/save-tickets', (req, res) => {
-    const s = getGuildSettings(req.session.guildId);
+    const s = getGuildSettings(req.session.gid);
     s.ticketCategoryId = req.body.catId;
     s.supportRoleId = req.body.supportRole;
-    s.ticketMessage = req.body.tMsg;
-    s.appealMessage = req.body.aMsg;
+    s.panelTitle = req.body.pTitle;
+    s.panelDesc = req.body.pDesc;
+    
+    // Handle dynamic buttons
+    const labels = req.body['labels[]'];
+    const emojis = req.body['emojis[]'];
+    const ids = req.body['ids[]'];
+    
+    if(labels) {
+        s.customOptions = labels.map((l, i) => ({ label: l, emoji: emojis[i], id: ids[i] })).filter(o => o.label);
+    }
+    
     res.redirect('/tickets');
 });
 
-app.post('/save-editor', (req, res) => {
-    const s = getGuildSettings(req.session.guildId);
-    s.panelTitle = req.body.pTitle;
-    s.panelDesc = req.body.pDesc;
-    s.panelColor = req.body.pColor;
-    s.panelImage = req.body.pImage;
-    s.ticketLabel = req.body.lTicket;
-    s.appealLabel = req.body.lAppeal;
-    res.redirect('/editor');
-});
-
-app.listen(CONFIG.PORT, '0.0.0.0', () => console.log("SHER LOCK Dashboard Live"));
+app.listen(CONFIG.PORT, () => console.log("SHER LOCK ULTIMATE LIVE"));
