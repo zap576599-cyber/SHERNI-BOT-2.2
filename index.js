@@ -3,9 +3,6 @@ const {
     Client, 
     GatewayIntentBits, 
     Partials, 
-    REST, 
-    Routes, 
-    PermissionsBitField,
     ActivityType 
 } = require('discord.js');
 const express = require('express');
@@ -18,15 +15,13 @@ const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     CLIENT_ID: process.env.DISCORD_CLIENT_ID,
     CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET,
-    // Prioritizing DISCORD_REDIRECT_URI as requested
     REDIRECT_URI: process.env.DISCORD_REDIRECT_URI || process.env.DISCORD_REDIRECT_URL,
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-fixed-session-v3'
+    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-final-fix-v4'
 };
 
 // --- DATA MANAGEMENT ---
 const db = new Map();
-
 const getGuildSettings = (guildId) => {
     if (!db.has(guildId)) {
         db.set(guildId, {
@@ -51,7 +46,7 @@ const client = new Client({
 });
 
 client.once('ready', () => {
-    console.log(`[BOT] Connected as ${client.user.tag}`);
+    console.log(`[BOT] Logged in as ${client.user.tag}`);
     client.user.setActivity('Cleaning Servers', { type: ActivityType.Watching });
 });
 
@@ -70,21 +65,19 @@ client.login(CONFIG.TOKEN).catch(e => console.error('[BOT] Login Failed:', e.mes
 
 // --- WEB DASHBOARD ---
 const app = express();
-app.set('trust proxy', 1); // Essential for Render
-app.use(bodyParser.urlencoded({ extended: true }));
 
+// REQUIRED: Render uses a proxy. Without this, cookies won't save.
+app.set('trust proxy', 1);
+
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({
     name: 'sher_session',
     keys: [CONFIG.SESSION_SECRET],
     maxAge: 24 * 60 * 60 * 1000,
-    secure: false, // Set to false because Render handles SSL at the proxy level
+    secure: false, // Render terminates SSL, so the app sees HTTP
     httpOnly: true,
-    signed: true,
-    overwrite: true,
-    sameSite: 'lax' // Helps prevent the loading loop after redirect
+    sameSite: 'lax'
 }));
-
-app.get('/health', (req, res) => res.status(200).send('OK'));
 
 const LAYOUT = (body, user) => `
 <!DOCTYPE html>
@@ -116,6 +109,8 @@ const LAYOUT = (body, user) => `
 </html>
 `;
 
+app.get('/health', (req, res) => res.status(200).send('OK'));
+
 app.get('/', (req, res) => {
     if (req.session && req.session.user) return res.redirect('/dashboard');
     res.send(LAYOUT(`
@@ -129,13 +124,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/login', (req, res) => {
-    if (!CONFIG.REDIRECT_URI) {
-        return res.status(500).send(LAYOUT(`
-            <h3 style="color:#F04747">Configuration Error</h3>
-            <p>The variable <b>DISCORD_REDIRECT_URI</b> is missing in Render.</p>
-            <code>Value should be: https://sherni-bot-2-2.onrender.com/callback</code>
-        `));
-    }
+    if (!CONFIG.REDIRECT_URI) return res.status(500).send("REDIRECT_URI missing in Environment Variables");
     const url = `https://discord.com/api/oauth2/authorize?client_id=${CONFIG.CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.REDIRECT_URI)}&response_type=code&scope=identify%20guilds`;
     res.redirect(url);
 });
@@ -153,36 +142,29 @@ app.get('/callback', async (req, res) => {
             redirect_uri: CONFIG.REDIRECT_URI,
             scope: 'identify guilds'
         }), { 
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 15000 
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
 
-        const access_token = tokenResp.data.access_token;
+        const at = tokenResp.data.access_token;
         const [u, g] = await Promise.all([
-            axios.get('https://discord.get/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } }).catch(() => axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } })),
-            axios.get('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${access_token}` } })
+            axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${at}` } }),
+            axios.get('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${at}` } })
         ]);
 
         req.session.user = u.data;
         req.session.guilds = g.data;
         
-        console.log(`[AUTH] Logged in: ${u.data.username}`);
-        
-        // Stricter redirect to break out of potential loops
-        res.writeHead(302, { 'Location': '/dashboard' });
-        return res.end();
+        console.log(`[AUTH] Successful login for ${u.data.username}`);
+        res.redirect('/dashboard');
 
     } catch (err) {
-        console.error('[AUTH] Error:', err.response?.data || err.message);
-        res.status(500).send("Auth exchange failed. Please go back and try again.");
+        console.error('[AUTH ERROR]', err.response?.data || err.message);
+        res.status(500).send("Login failed. Check server logs.");
     }
 });
 
 app.get('/dashboard', (req, res) => {
-    if (!req.session || !req.session.user) {
-        console.log('[DASH] No session, redirecting home.');
-        return res.redirect('/');
-    }
+    if (!req.session || !req.session.user) return res.redirect('/');
     
     const adminGuilds = req.session.guilds.filter(g => (BigInt(g.permissions) & 0x8n) === 0x8n);
     const gid = req.query.guild_id;
@@ -194,7 +176,7 @@ app.get('/dashboard', (req, res) => {
                 <a href="/dashboard?guild_id=${g.id}" class="btn" style="padding:5px 15px">Manage</a>
             </div>
         `).join('');
-        return res.send(LAYOUT(`<h3>Select a Server</h3>${items || '<p>No servers found.</p>'}`, req.session.user));
+        return res.send(LAYOUT(`<h3>Select a Server</h3>${items || '<p>No admin servers found.</p>'}`, req.session.user));
     }
 
     const discordGuild = client.guilds.cache.get(gid);
@@ -202,7 +184,7 @@ app.get('/dashboard', (req, res) => {
         return res.send(LAYOUT(`
             <div style="text-align:center">
                 <h3>Bot Not Found</h3>
-                <p>The bot is not in this server.</p>
+                <p>The bot is not in <b>${gid}</b>.</p>
                 <a href="https://discord.com/api/oauth2/authorize?client_id=${CONFIG.CLIENT_ID}&permissions=8&scope=bot%20applications.commands" class="btn" target="_blank">Invite Bot</a>
                 <br><br><a href="/dashboard">Back to List</a>
             </div>
@@ -222,7 +204,7 @@ app.get('/dashboard', (req, res) => {
             <label><input type="checkbox" name="ib" ${s.ignoreBots ? 'checked' : ''}> Ignore Bots</label><br>
             <label><input type="checkbox" name="it" ${s.ignoreThreads ? 'checked' : ''}> Ignore Threads</label>
             <br><br>
-            <label>Ignored User IDs</label>
+            <label>Ignored User IDs (Comma separated)</label>
             <input type="text" name="iu" value="${s.ignoredUsers.join(', ')}">
             <button type="submit" class="btn" style="width:100%; margin-top:20px; background:#3BA55C">Save Settings</button>
         </form>
@@ -247,6 +229,7 @@ app.get('/logout', (req, res) => {
     res.redirect('/');
 });
 
+// Explicitly bind to 0.0.0.0 to satisfy Render's port scanner
 app.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log(`[SYS] Web Dashboard active on port ${CONFIG.PORT}`);
+    console.log(`[SYS] Dashboard listening on 0.0.0.0:${CONFIG.PORT}`);
 });
