@@ -8,16 +8,14 @@ const {
 const express = require('express');
 const session = require('cookie-session');
 const bodyParser = require('body-parser');
-const axios = require('axios');
 
 // --- CONFIGURATION ---
 const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
-    CLIENT_ID: process.env.DISCORD_CLIENT_ID,
-    CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET,
-    REDIRECT_URI: process.env.DISCORD_REDIRECT_URI || process.env.DISCORD_REDIRECT_URL,
+    // Set this in Render Env: ADMIN_PASSWORD
+    PASSWORD: process.env.ADMIN_PASSWORD || 'admin123', 
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-final-fix-v4'
+    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-password-auth-v1'
 };
 
 // --- DATA MANAGEMENT ---
@@ -65,21 +63,15 @@ client.login(CONFIG.TOKEN).catch(e => console.error('[BOT] Login Failed:', e.mes
 
 // --- WEB DASHBOARD ---
 const app = express();
-
-// REQUIRED: Render uses a proxy. Without this, cookies won't save.
 app.set('trust proxy', 1);
-
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({
     name: 'sher_session',
     keys: [CONFIG.SESSION_SECRET],
-    maxAge: 24 * 60 * 60 * 1000,
-    secure: false, // Render terminates SSL, so the app sees HTTP
-    httpOnly: true,
-    sameSite: 'lax'
+    maxAge: 24 * 60 * 60 * 1000
 }));
 
-const LAYOUT = (body, user) => `
+const LAYOUT = (body, loggedIn = false) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -93,15 +85,15 @@ const LAYOUT = (body, user) => `
         .nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; margin-bottom: 25px; padding-bottom: 15px; }
         .btn { background: var(--primary); color: #fff; padding: 12px 20px; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; font-weight: bold; transition: 0.2s; display: inline-block; }
         .card-inner { background: #23272A; padding: 15px; border-radius: 8px; border: 1px solid #3E4147; margin-bottom: 20px; }
-        .channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 200px; overflow-y: auto; padding: 10px; background: #1E2124; border-radius: 5px; }
-        input[type="text"] { width: 100%; padding: 12px; border-radius: 5px; border: 1px solid #444; background: #1E2124; color: #fff; margin-top: 5px; box-sizing: border-box; }
+        .channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 250px; overflow-y: auto; padding: 10px; background: #1E2124; border-radius: 5px; }
+        input[type="password"], input[type="text"] { width: 100%; padding: 12px; border-radius: 5px; border: 1px solid #444; background: #1E2124; color: #fff; margin-top: 5px; box-sizing: border-box; }
     </style>
 </head>
 <body>
     <div class="wrapper">
         <div class="nav">
-            <h2 style="margin:0">SHER BOT</h2>
-            ${user ? `<span>${user.username} | <a href="/logout" style="color:#F04747">Logout</a></span>` : ''}
+            <h2 style="margin:0">SHER ADMIN</h2>
+            ${loggedIn ? '<a href="/logout" style="color:#F04747; text-decoration:none">Logout</a>' : ''}
         </div>
         ${body}
     </div>
@@ -109,118 +101,92 @@ const LAYOUT = (body, user) => `
 </html>
 `;
 
-app.get('/health', (req, res) => res.status(200).send('OK'));
-
 app.get('/', (req, res) => {
-    if (req.session && req.session.user) return res.redirect('/dashboard');
+    if (req.session.isAdmin) return res.redirect('/dashboard');
     res.send(LAYOUT(`
-        <div style="text-align:center; padding: 40px 0;">
-            <h1>Server Management</h1>
-            <p style="color:var(--muted)">Connect your Discord account to manage settings.</p>
-            <br>
-            <a href="/login" class="btn">Login with Discord</a>
+        <div style="text-align:center; padding: 20px 0;">
+            <h1>Admin Access</h1>
+            <form action="/login" method="POST">
+                <input type="password" name="password" placeholder="Enter Admin Password" required autofocus>
+                <br><br>
+                <button type="submit" class="btn" style="width:100%">Unlock Dashboard</button>
+            </form>
         </div>
     `));
 });
 
-app.get('/login', (req, res) => {
-    if (!CONFIG.REDIRECT_URI) return res.status(500).send("REDIRECT_URI missing in Environment Variables");
-    const url = `https://discord.com/api/oauth2/authorize?client_id=${CONFIG.CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.REDIRECT_URI)}&response_type=code&scope=identify%20guilds`;
-    res.redirect(url);
-});
-
-app.get('/callback', async (req, res) => {
-    const { code } = req.query;
-    if (!code) return res.redirect('/');
-    
-    try {
-        const tokenResp = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
-            client_id: CONFIG.CLIENT_ID,
-            client_secret: CONFIG.CLIENT_SECRET,
-            code,
-            grant_type: 'authorization_code',
-            redirect_uri: CONFIG.REDIRECT_URI,
-            scope: 'identify guilds'
-        }), { 
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
-
-        const at = tokenResp.data.access_token;
-        const [u, g] = await Promise.all([
-            axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${at}` } }),
-            axios.get('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${at}` } })
-        ]);
-
-        req.session.user = u.data;
-        req.session.guilds = g.data;
-        
-        console.log(`[AUTH] Successful login for ${u.data.username}`);
+app.post('/login', (req, res) => {
+    if (req.body.password === CONFIG.PASSWORD) {
+        req.session.isAdmin = true;
         res.redirect('/dashboard');
-
-    } catch (err) {
-        console.error('[AUTH ERROR]', err.response?.data || err.message);
-        res.status(500).send("Login failed. Check server logs.");
+    } else {
+        res.send(LAYOUT('<p style="color:#F04747; text-align:center">Wrong password. Try again.</p><br><a href="/" class="btn" style="width:100%; text-align:center">Back</a>'));
     }
 });
 
 app.get('/dashboard', (req, res) => {
-    if (!req.session || !req.session.user) return res.redirect('/');
+    if (!req.session.isAdmin) return res.redirect('/');
     
-    const adminGuilds = req.session.guilds.filter(g => (BigInt(g.permissions) & 0x8n) === 0x8n);
     const gid = req.query.guild_id;
+    const guilds = client.guilds.cache;
 
     if (!gid) {
-        const items = adminGuilds.map(g => `
+        const items = guilds.map(g => `
             <div class="card-inner" style="display:flex; justify-content:space-between; align-items:center;">
                 <b>${g.name}</b>
                 <a href="/dashboard?guild_id=${g.id}" class="btn" style="padding:5px 15px">Manage</a>
             </div>
         `).join('');
-        return res.send(LAYOUT(`<h3>Select a Server</h3>${items || '<p>No admin servers found.</p>'}`, req.session.user));
+        return res.send(LAYOUT(`<h3>Servers with Bot</h3>${items || '<p>Bot is not in any servers yet.</p>'}`, true));
     }
 
     const discordGuild = client.guilds.cache.get(gid);
-    if (!discordGuild) {
-        return res.send(LAYOUT(`
-            <div style="text-align:center">
-                <h3>Bot Not Found</h3>
-                <p>The bot is not in <b>${gid}</b>.</p>
-                <a href="https://discord.com/api/oauth2/authorize?client_id=${CONFIG.CLIENT_ID}&permissions=8&scope=bot%20applications.commands" class="btn" target="_blank">Invite Bot</a>
-                <br><br><a href="/dashboard">Back to List</a>
-            </div>
-        `, req.session.user));
-    }
+    if (!discordGuild) return res.redirect('/dashboard');
 
     const s = getGuildSettings(gid);
     const channels = discordGuild.channels.cache.filter(c => c.isTextBased() && !c.isThread());
 
     res.send(LAYOUT(`
+        <a href="/dashboard" style="color:var(--muted); text-decoration:none">← Back to Servers</a>
         <h3>Configuring ${discordGuild.name}</h3>
         <form action="/save" method="POST">
             <input type="hidden" name="gid" value="${gid}">
-            <label>Auto-Delete Channels</label>
-            <div class="channel-grid">${channels.map(c => `<label><input type="checkbox" name="chans" value="${c.id}" ${s.autoDeleteChannels.includes(c.id) ? 'checked' : ''}> #${c.name}</label>`).join('')}</div>
+            
+            <label><b>Auto-Delete Channels</b></label>
+            <div class="channel-grid">
+                ${channels.map(c => `
+                    <label style="display:block; padding: 5px 0;">
+                        <input type="checkbox" name="chans" value="${c.id}" ${s.autoDeleteChannels.includes(c.id) ? 'checked' : ''}> #${c.name}
+                    </label>
+                `).join('')}
+            </div>
+            
             <br>
             <label><input type="checkbox" name="ib" ${s.ignoreBots ? 'checked' : ''}> Ignore Bots</label><br>
             <label><input type="checkbox" name="it" ${s.ignoreThreads ? 'checked' : ''}> Ignore Threads</label>
+            
             <br><br>
-            <label>Ignored User IDs (Comma separated)</label>
+            <label><b>Ignored User IDs</b> (Comma separated)</label>
             <input type="text" name="iu" value="${s.ignoredUsers.join(', ')}">
+            
             <button type="submit" class="btn" style="width:100%; margin-top:20px; background:#3BA55C">Save Settings</button>
         </form>
-    `, req.session.user));
+    `, true));
 });
 
 app.post('/save', (req, res) => {
-    if (!req.session.user) return res.sendStatus(403);
+    if (!req.session.isAdmin) return res.sendStatus(403);
     const { gid, ib, it, iu } = req.body;
     let { chans } = req.body;
     if (!chans) chans = [];
     if (!Array.isArray(chans)) chans = [chans];
+    
     const s = getGuildSettings(gid);
     s.autoDeleteChannels = chans;
-    s.ignoreBots = !!ib; s.ignoreThreads = !!it;
+    s.ignoreBots = !!ib; 
+    s.ignoreThreads = !!it;
     s.ignoredUsers = iu ? iu.split(',').map(i => i.trim()).filter(i => i) : [];
+    
     res.redirect(`/dashboard?guild_id=${gid}`);
 });
 
@@ -229,7 +195,6 @@ app.get('/logout', (req, res) => {
     res.redirect('/');
 });
 
-// Explicitly bind to 0.0.0.0 to satisfy Render's port scanner
 app.listen(CONFIG.PORT, '0.0.0.0', () => {
-    console.log(`[SYS] Dashboard listening on 0.0.0.0:${CONFIG.PORT}`);
+    console.log(`[SYS] Admin Dashboard running on port ${CONFIG.PORT}`);
 });
