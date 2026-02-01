@@ -18,9 +18,10 @@ const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     CLIENT_ID: process.env.DISCORD_CLIENT_ID,
     CLIENT_SECRET: process.env.DISCORD_CLIENT_SECRET,
-    REDIRECT_URI: process.env.DISCORD_REDIRECT_URL || process.env.DISCORD_REDIRECT_URI,
+    // Prioritizing DISCORD_REDIRECT_URI as requested
+    REDIRECT_URI: process.env.DISCORD_REDIRECT_URI || process.env.DISCORD_REDIRECT_URL,
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-optimized-key-2024'
+    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-fixed-session-v3'
 };
 
 // --- DATA MANAGEMENT ---
@@ -69,18 +70,18 @@ client.login(CONFIG.TOKEN).catch(e => console.error('[BOT] Login Failed:', e.mes
 
 // --- WEB DASHBOARD ---
 const app = express();
-
-// CRITICAL FOR RENDER: Tells express to trust the headers Render sends
-app.set('trust proxy', 1);
-
+app.set('trust proxy', 1); // Essential for Render
 app.use(bodyParser.urlencoded({ extended: true }));
+
 app.use(session({
     name: 'sher_session',
     keys: [CONFIG.SESSION_SECRET],
     maxAge: 24 * 60 * 60 * 1000,
-    secure: false, // Set to true if you force HTTPS, but false is safer for debugging
+    secure: false, // Set to false because Render handles SSL at the proxy level
     httpOnly: true,
-    proxy: true // CRITICAL: Allows cookies to work behind Render's proxy
+    signed: true,
+    overwrite: true,
+    sameSite: 'lax' // Helps prevent the loading loop after redirect
 }));
 
 app.get('/health', (req, res) => res.status(200).send('OK'));
@@ -97,7 +98,7 @@ const LAYOUT = (body, user) => `
         body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 15px; display: flex; justify-content: center; }
         .wrapper { width: 100%; max-width: 800px; background: var(--card); padding: 30px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
         .nav { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; margin-bottom: 25px; padding-bottom: 15px; }
-        .btn { background: var(--primary); color: #fff; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; font-weight: bold; transition: 0.2s; display: inline-block; }
+        .btn { background: var(--primary); color: #fff; padding: 12px 20px; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; font-weight: bold; transition: 0.2s; display: inline-block; }
         .card-inner { background: #23272A; padding: 15px; border-radius: 8px; border: 1px solid #3E4147; margin-bottom: 20px; }
         .channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-height: 200px; overflow-y: auto; padding: 10px; background: #1E2124; border-radius: 5px; }
         input[type="text"] { width: 100%; padding: 12px; border-radius: 5px; border: 1px solid #444; background: #1E2124; color: #fff; margin-top: 5px; box-sizing: border-box; }
@@ -116,7 +117,7 @@ const LAYOUT = (body, user) => `
 `;
 
 app.get('/', (req, res) => {
-    if (req.session.user) return res.redirect('/dashboard');
+    if (req.session && req.session.user) return res.redirect('/dashboard');
     res.send(LAYOUT(`
         <div style="text-align:center; padding: 40px 0;">
             <h1>Server Management</h1>
@@ -128,7 +129,13 @@ app.get('/', (req, res) => {
 });
 
 app.get('/login', (req, res) => {
-    if (!CONFIG.REDIRECT_URI) return res.status(500).send("REDIRECT_URI is not configured in environment variables.");
+    if (!CONFIG.REDIRECT_URI) {
+        return res.status(500).send(LAYOUT(`
+            <h3 style="color:#F04747">Configuration Error</h3>
+            <p>The variable <b>DISCORD_REDIRECT_URI</b> is missing in Render.</p>
+            <code>Value should be: https://sherni-bot-2-2.onrender.com/callback</code>
+        `));
+    }
     const url = `https://discord.com/api/oauth2/authorize?client_id=${CONFIG.CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.REDIRECT_URI)}&response_type=code&scope=identify%20guilds`;
     res.redirect(url);
 });
@@ -137,7 +144,6 @@ app.get('/callback', async (req, res) => {
     const { code } = req.query;
     if (!code) return res.redirect('/');
     
-    console.log('[AUTH] Code received, exchanging for token...');
     try {
         const tokenResp = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
             client_id: CONFIG.CLIENT_ID,
@@ -151,34 +157,30 @@ app.get('/callback', async (req, res) => {
             timeout: 15000 
         });
 
-        console.log('[AUTH] Token obtained, fetching user data...');
         const access_token = tokenResp.data.access_token;
-        
         const [u, g] = await Promise.all([
-            axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` }, timeout: 10000 }),
-            axios.get('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${access_token}` }, timeout: 10000 })
+            axios.get('https://discord.get/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } }).catch(() => axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } })),
+            axios.get('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${access_token}` } })
         ]);
 
         req.session.user = u.data;
         req.session.guilds = g.data;
         
-        console.log(`[AUTH] Success! Logged in as ${u.data.username}`);
-        req.session.save(() => {
-            res.redirect('/dashboard');
-        });
+        console.log(`[AUTH] Logged in: ${u.data.username}`);
+        
+        // Stricter redirect to break out of potential loops
+        res.writeHead(302, { 'Location': '/dashboard' });
+        return res.end();
+
     } catch (err) {
-        console.error('[AUTH] Error during callback:', err.response?.data || err.message);
-        res.send(LAYOUT(`
-            <h3 style="color:#F04747">Authentication Failed</h3>
-            <p>Error: ${err.message}</p>
-            <a href="/" class="btn">Try Again</a>
-        `));
+        console.error('[AUTH] Error:', err.response?.data || err.message);
+        res.status(500).send("Auth exchange failed. Please go back and try again.");
     }
 });
 
 app.get('/dashboard', (req, res) => {
-    if (!req.session.user) {
-        console.log('[DASHBOARD] Access denied: No session found.');
+    if (!req.session || !req.session.user) {
+        console.log('[DASH] No session, redirecting home.');
         return res.redirect('/');
     }
     
@@ -192,7 +194,7 @@ app.get('/dashboard', (req, res) => {
                 <a href="/dashboard?guild_id=${g.id}" class="btn" style="padding:5px 15px">Manage</a>
             </div>
         `).join('');
-        return res.send(LAYOUT(`<h3>Select a Server</h3>${items || '<p>No servers found where you are an Admin.</p>'}`, req.session.user));
+        return res.send(LAYOUT(`<h3>Select a Server</h3>${items || '<p>No servers found.</p>'}`, req.session.user));
     }
 
     const discordGuild = client.guilds.cache.get(gid);
@@ -200,9 +202,9 @@ app.get('/dashboard', (req, res) => {
         return res.send(LAYOUT(`
             <div style="text-align:center">
                 <h3>Bot Not Found</h3>
-                <p>The bot is not in this server yet.</p>
+                <p>The bot is not in this server.</p>
                 <a href="https://discord.com/api/oauth2/authorize?client_id=${CONFIG.CLIENT_ID}&permissions=8&scope=bot%20applications.commands" class="btn" target="_blank">Invite Bot</a>
-                <br><br><a href="/dashboard" style="color:var(--muted)">Back to List</a>
+                <br><br><a href="/dashboard">Back to List</a>
             </div>
         `, req.session.user));
     }
@@ -220,11 +222,10 @@ app.get('/dashboard', (req, res) => {
             <label><input type="checkbox" name="ib" ${s.ignoreBots ? 'checked' : ''}> Ignore Bots</label><br>
             <label><input type="checkbox" name="it" ${s.ignoreThreads ? 'checked' : ''}> Ignore Threads</label>
             <br><br>
-            <label>Ignored User IDs (Comma separated)</label>
+            <label>Ignored User IDs</label>
             <input type="text" name="iu" value="${s.ignoredUsers.join(', ')}">
             <button type="submit" class="btn" style="width:100%; margin-top:20px; background:#3BA55C">Save Settings</button>
         </form>
-        <p style="text-align:center"><a href="/dashboard" style="color:var(--muted)">Back to List</a></p>
     `, req.session.user));
 });
 
@@ -234,13 +235,10 @@ app.post('/save', (req, res) => {
     let { chans } = req.body;
     if (!chans) chans = [];
     if (!Array.isArray(chans)) chans = [chans];
-
     const s = getGuildSettings(gid);
     s.autoDeleteChannels = chans;
-    s.ignoreBots = !!ib;
-    s.ignoreThreads = !!it;
+    s.ignoreBots = !!ib; s.ignoreThreads = !!it;
     s.ignoredUsers = iu ? iu.split(',').map(i => i.trim()).filter(i => i) : [];
-
     res.redirect(`/dashboard?guild_id=${gid}`);
 });
 
