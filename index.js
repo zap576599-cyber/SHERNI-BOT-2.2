@@ -4,7 +4,8 @@ const {
     GatewayIntentBits, 
     Partials, 
     ActivityType,
-    PermissionFlagsBits
+    PermissionFlagsBits,
+    EmbedBuilder
 } = require('discord.js');
 const express = require('express');
 const session = require('cookie-session');
@@ -19,10 +20,7 @@ const CONFIG = {
     SESSION_SECRET: process.env.SESSION_SECRET || 'sher-lock-secure-v2'
 };
 
-// Map to store passwords (GuildID -> Password)
 const serverPasswords = new Map();
-
-// Parse passwords from Render Environment Variables
 const loadPasswords = () => {
     if (CONFIG.RAW_PASSWORDS) {
         CONFIG.RAW_PASSWORDS.split(',').forEach(pair => {
@@ -33,7 +31,6 @@ const loadPasswords = () => {
 };
 loadPasswords();
 
-// Helper for generating random setup keys for new servers
 const generateRandomPass = () => `SHER-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
 // --- DATABASE (In-Memory) ---
@@ -47,6 +44,8 @@ const getGuildSettings = (guildId) => {
             ignoreThreads: true,
             antiLink: false,
             blacklist: [],
+            logChannelId: "", // Channel to send logs to
+            modRoleId: ""     // Role ID allowed to use !getpass
         });
     }
     return db.get(guildId);
@@ -66,54 +65,108 @@ client.once('ready', () => {
     console.log(`[BOT] SHER LOCK Online as ${client.user.tag}`);
     client.user.setActivity('Dashboard Active', { type: ActivityType.Watching });
     
-    // Assign random passwords to any servers that don't have one in ENV yet
     client.guilds.cache.forEach(guild => {
         if (!serverPasswords.has(guild.id)) {
             const temp = generateRandomPass();
             serverPasswords.set(guild.id, temp);
-            console.log(`[SETUP] Generated Temp Pass for ${guild.name}: ${temp}`);
         }
     });
 });
 
-// Notify owner on join with their random password
 client.on('guildCreate', async (guild) => {
     const tempPass = generateRandomPass();
     serverPasswords.set(guild.id, tempPass);
     try {
         const owner = await guild.fetchOwner();
-        owner.send(`🛡️ **SHER LOCK Setup Required**\nTo access your dashboard for **${guild.name}**, use:\n**Server ID:** \`${guild.id}\` \n**Password:** \`${tempPass}\`\n\nYou can change this password in the dashboard.`);
-    } catch (e) { console.log("Could not DM owner."); }
+        owner.send(`🛡️ **SHER LOCK Setup**\n**Server:** ${guild.name}\n**ID:** \`${guild.id}\`\n**Password:** \`${tempPass}\`\nSet your Mod Role in the dashboard to share access safely.`);
+    } catch (e) {}
 });
 
 client.on('messageCreate', async (msg) => {
-    if (!msg.guild || msg.author.id === client.user.id) return;
-
-    // Safety Command for Owners to retrieve password
-    if (msg.content === '!getpass' && msg.member.permissions.has(PermissionFlagsBits.Administrator)) {
-        const pass = serverPasswords.get(msg.guild.id);
-        return msg.reply({ content: `The dashboard password for this server is: ||${pass}||` });
-    }
+    if (!msg.guild || msg.author.bot) return;
 
     const s = getGuildSettings(msg.guild.id);
+    const isOwner = msg.author.id === msg.guild.ownerId;
+    const isAdmin = msg.member.permissions.has(PermissionFlagsBits.Administrator);
+    const hasModRole = s.modRoleId && msg.member.roles.cache.has(s.modRoleId);
+    const isAuthorized = isOwner || isAdmin || hasModRole;
+
+    // --- ADMIN / MOD COMMANDS ---
+
+    // 1. Get Password (Access Control)
+    if (msg.content === '!getpass') {
+        if (isAuthorized) {
+            const pass = serverPasswords.get(msg.guild.id);
+            return msg.reply({ content: `🔑 **Dashboard Access**\nURL: ${process.env.RENDER_EXTERNAL_URL || 'Your Render URL'}\nID: \`${msg.guild.id}\`\nPassword: ||${pass}||`, ephemeral: true });
+        } else {
+            return msg.reply("❌ You do not have the required role to view the password.");
+        }
+    }
+
+    // 2. Manual Purge (!clear 10)
+    if (msg.content.startsWith('!clear')) {
+        if (!isAuthorized) return;
+        const args = msg.content.split(' ');
+        const amount = parseInt(args[1]);
+        if (!amount || amount < 1 || amount > 99) return msg.reply("Usage: `!clear <1-99>`");
+        
+        try {
+            await msg.channel.bulkDelete(amount + 1, true);
+            const confirmation = await msg.channel.send(`🧹 Cleared ${amount} messages.`);
+            setTimeout(() => confirmation.delete().catch(()=>{}), 3000);
+        } catch (e) { msg.channel.send("Error deleting messages (older than 14 days?)"); }
+        return;
+    }
+
+    // 3. Lockdown (!lock / !unlock)
+    if (msg.content === '!lock') {
+        if (!isAuthorized) return;
+        msg.channel.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: false });
+        return msg.reply("🔒 **Channel Locked**");
+    }
+    if (msg.content === '!unlock') {
+        if (!isAuthorized) return;
+        msg.channel.permissionOverwrites.edit(msg.guild.roles.everyone, { SendMessages: true });
+        return msg.reply("🔓 **Channel Unlocked**");
+    }
+
+    // --- AUTO MOD LOGIC ---
+
     let trigger = false;
+    let reason = "";
 
-    // Filter Logic
-    if (msg.author.bot && s.ignoreBots) return;
-    if (msg.channel.isThread() && s.ignoreThreads) return;
+    // Check Filters
+    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) { trigger = true; reason = "Anti-Link"; }
+    else if (s.blacklist.some(word => msg.content.toLowerCase().includes(word.toLowerCase()))) { trigger = true; reason = "Blacklist Word"; }
+    else if (s.autoDeleteChannels.includes(msg.channel.id)) { trigger = true; reason = "Auto-Delete Channel"; }
+
+    // Exceptions
+    if (msg.channel.isThread() && s.ignoreThreads) trigger = false;
     
-    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) trigger = true;
-    if (s.blacklist.some(word => msg.content.toLowerCase().includes(word.toLowerCase()))) trigger = true;
-    if (s.autoDeleteChannels.includes(msg.channel.id)) trigger = true;
-
     if (trigger) {
-        setTimeout(() => {
-            msg.delete().catch(() => {});
+        setTimeout(async () => {
+            try {
+                await msg.delete();
+                
+                // --- LOGGING SYSTEM ---
+                if (s.logChannelId) {
+                    const logChan = msg.guild.channels.cache.get(s.logChannelId);
+                    if (logChan) {
+                        const embed = new EmbedBuilder()
+                            .setColor(0xFF0000)
+                            .setAuthor({ name: msg.author.tag, iconURL: msg.author.displayAvatarURL() })
+                            .setDescription(`**Message Deleted in <#${msg.channel.id}>**\n${msg.content}`)
+                            .addFields({ name: 'Reason', value: reason, inline: true })
+                            .setTimestamp();
+                        logChan.send({ embeds: [embed] }).catch(()=>{});
+                    }
+                }
+            } catch (e) {}
         }, s.deleteDelay);
     }
 });
 
-client.login(CONFIG.TOKEN).catch(err => console.error("Discord Login Error:", err));
+client.login(CONFIG.TOKEN);
 
 // --- WEB INTERFACE ---
 const app = express();
@@ -124,7 +177,7 @@ app.use(session({
     maxAge: 24 * 60 * 60 * 1000 
 }));
 
-const UI = (content, authed = false) => `
+const UI = (content) => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -155,7 +208,6 @@ app.get('/', (req, res) => {
     if (req.session.guildId) return res.redirect('/dashboard');
     res.send(UI(`
         <h2 style="text-align:center">SHER LOCK Access</h2>
-        <p style="text-align:center; color: #94a3b8;">Enter Server ID and Password to manage settings.</p>
         <form action="/login" method="POST">
             <label>Server ID</label>
             <input type="text" name="gid" placeholder="e.g. 1234567890" required>
@@ -192,7 +244,12 @@ app.get('/dashboard', (req, res) => {
             <div class="section">
                 <label>🔑 Dashboard Password</label>
                 <input type="text" name="newPass" value="${serverPasswords.get(gid)}">
-                <small style="color: #64748b">Change this to your preferred access key.</small>
+                
+                <label>👮 Mod Role ID (Can use !getpass & !clear)</label>
+                <input type="text" name="modRole" value="${s.modRoleId}" placeholder="Right click role > Copy ID">
+                
+                <label>📝 Log Channel ID (For Deleted Msgs)</label>
+                <input type="text" name="logChan" value="${s.logChannelId}" placeholder="Right click channel > Copy ID">
             </div>
             
             <div class="section">
@@ -208,32 +265,23 @@ app.get('/dashboard', (req, res) => {
             </div>
 
             <div class="section">
-                <label>⚙️ General Options</label>
-                <div class="row">
-                    <input type="checkbox" name="ignoreThreads" ${s.ignoreThreads ? 'checked' : ''}>
-                    <span>Ignore Threads</span>
-                </div>
-                <div class="row">
-                    <input type="checkbox" name="ignoreBots" ${s.ignoreBots ? 'checked' : ''}>
-                    <span>Ignore Bots</span>
-                </div>
-                <div class="row">
-                    <input type="checkbox" name="antiLink" ${s.antiLink ? 'checked' : ''}>
-                    <span>Anti-Link Protection</span>
-                </div>
+                <label>⚙️ Options</label>
+                <div class="row"><input type="checkbox" name="ignoreThreads" ${s.ignoreThreads ? 'checked' : ''}> Ignore Threads</div>
+                <div class="row"><input type="checkbox" name="ignoreBots" ${s.ignoreBots ? 'checked' : ''}> Ignore Bots</div>
+                <div class="row"><input type="checkbox" name="antiLink" ${s.antiLink ? 'checked' : ''}> Anti-Link Protection</div>
             </div>
 
             <div class="section">
-                <label>⏱️ Deletion Delay (ms)</label>
+                <label>⏱️ Delay (ms)</label>
                 <input type="number" name="delay" value="${s.deleteDelay}" min="0">
                 
-                <label>🚫 Blacklist Words (comma separated)</label>
-                <textarea name="words" placeholder="scam, badword, link">${s.blacklist.join(', ')}</textarea>
+                <label>🚫 Blacklist (comma separated)</label>
+                <textarea name="words">${s.blacklist.join(', ')}</textarea>
             </div>
 
-            <button class="btn">Save Configuration</button>
+            <button class="btn">Save Settings</button>
         </form>
-        <a href="/logout" class="logout">Logout from Server Dashboard</a>
+        <a href="/logout" class="logout">Logout</a>
     `));
 });
 
@@ -247,6 +295,8 @@ app.post('/save', (req, res) => {
     s.ignoreThreads = req.body.ignoreThreads === 'on';
     s.ignoreBots = req.body.ignoreBots === 'on';
     s.blacklist = req.body.words ? req.body.words.split(',').map(w => w.trim()).filter(w => w) : [];
+    s.modRoleId = req.body.modRole ? req.body.modRole.trim() : "";
+    s.logChannelId = req.body.logChan ? req.body.logChan.trim() : "";
     
     let selectedChans = req.body.chans || [];
     if (!Array.isArray(selectedChans)) selectedChans = [selectedChans];
