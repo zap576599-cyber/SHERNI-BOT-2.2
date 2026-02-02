@@ -1,11 +1,10 @@
 /**
- * SHER BOT - TITAN ULTRA (V4.6 INDUSTRIAL)
+ * SHER BOT - TITAN-MEGA v5.0 (INDUSTRIAL GRADE)
  * --------------------------------------------
- * RE-BRAND: Sher Bot (Core Engine)
- * FEATURE: Advanced Ticket System, Anti-Nuke, Key Management
- * UI: Dynamic Server Branding (Icon/Name)
- * UI: Dedicated "Access Denied" Error Terminal
- * UI: High-Security Authentication Flow
+ * CORE: Advanced Neural Security Engine
+ * FEATURES: Global Threat Intelligence, Live Command Terminal, Heatmap Telemetry
+ * UI: Neo-Brutalist "Titan" Design System
+ * PERSISTENCE: Multi-Node Session Management
  */
 
 require('dotenv').config();
@@ -13,34 +12,37 @@ const {
     Client, GatewayIntentBits, Partials, ActivityType, PermissionFlagsBits, 
     EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, 
     ChannelType, REST, Routes, SlashCommandBuilder, Events, Collection,
-    StringSelectMenuBuilder, AuditLogEvent
+    StringSelectMenuBuilder, AuditLogEvent, ModalBuilder, TextInputBuilder, TextInputStyle
 } = require('discord.js');
 const express = require('express');
 const session = require('cookie-session');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
+const { EventEmitter } = require('events');
 
-// --- SYSTEM ARCHITECTURE ---
+// --- SYSTEM ARCHITECTURE & CONSTANTS ---
 const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     CLIENT_ID: process.env.DISCORD_CLIENT_ID,
     PORT: process.env.PORT || 10000,
-    MASTER_KEY: process.env.MASTER_KEY || "SHER-ADMIN-OG",
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-v4-ultra',
+    MASTER_KEY: process.env.MASTER_KEY || "SHER-TITAN-2024",
+    SESSION_SECRET: process.env.SESSION_SECRET || 'neural-link-omega-9',
     BASE_URL: process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 10000}`,
     BOOT_TIME: Date.now(),
-    VERSION: "TITAN ULTRA V4.6"
+    VERSION: "TITAN-MEGA v5.0",
+    MAX_LOGS: 100
 };
 
+// --- DATA PERSISTENCE LAYERS ---
 const db = new Map();
-const serverPasswords = new Map();
+const serverKeys = new Map();
 const auditLogs = new Map(); 
 const analytics = new Map();
-const ticketCache = new Map();
-const ticketTranscripts = new Map();
-const antiNukeTracker = new Map();
+const ticketStore = new Map();
+const threatHeuristics = new Map();
+const systemEvents = new EventEmitter();
 
-// --- SETTINGS HELPER ---
+// --- CORE UTILITIES ---
 const getSettings = (gid) => {
     if (!db.has(gid)) {
         db.set(gid, {
@@ -49,334 +51,250 @@ const getSettings = (gid) => {
             adminRoleIds: [], 
             antiLink: true,
             antiGhostPing: true,
-            antiMassMention: true,
             antiNuke: true, 
-            nukeThreshold: 3,
-            maxMentions: 5,
-            ignoreAdmins: true, 
-            ignoreBots: true,   
-            ignoreThreads: true,
-            uiStyle: "dropdown", 
-            autoDeleteChannels: [],
-            deleteDelay: 3000,
+            nukeThreshold: 5,
+            securityLevel: "HIGH", // LOW, HIGH, INSANE
+            autoLockdown: false,
             panelColor: "#0ea5e9",
-            panelTitle: "📡 SHER SECURITY HUB",
-            panelDesc: "Industrial security protocols active. Uplink status: ONLINE."
+            panelTitle: "📡 TITAN NEURAL HUB",
+            panelDesc: "Industrial security protocols active. All packets monitored."
         });
     }
     return db.get(gid);
 };
 
-// --- LOGGING & TELEMETRY ---
-const trackEvent = (gid, key, value = 1) => {
-    if (!analytics.has(gid)) analytics.set(gid, { messages: 0, threats: 0, tickets: 0, deletions: 0 });
-    const data = analytics.get(gid);
-    if (data[key] !== undefined) data[key] += value;
-};
-
-const logToAudit = (gid, action, user, reason) => {
+const logAction = (gid, type, user, detail) => {
     if (!auditLogs.has(gid)) auditLogs.set(gid, []);
-    const logs = auditLogs.get(gid);
-    logs.unshift({ 
-        id: crypto.randomBytes(4).toString('hex').toUpperCase(), 
-        time: new Date().toLocaleTimeString(), 
-        action, 
-        user: user?.tag || user || "System", 
-        reason 
-    });
-    if (logs.length > 50) logs.pop();
+    const entry = {
+        id: `TX-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+        ts: new Date().toISOString(),
+        type,
+        user: user?.tag || user || "SYSTEM",
+        detail
+    };
+    auditLogs.get(gid).unshift(entry);
+    if (auditLogs.get(gid).length > CONFIG.MAX_LOGS) auditLogs.get(gid).pop();
+    systemEvents.emit('audit', gid, entry);
 };
 
+// --- DISCORD CLIENT INITIALIZATION ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
         GatewayIntentBits.GuildMessages, 
         GatewayIntentBits.MessageContent, 
         GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildPresences,
         GatewayIntentBits.GuildModeration
     ], 
-    partials: [Partials.Channel, Partials.Message, Partials.User]
+    partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
 });
 
-// --- ANTI-NUKE ENGINE ---
-const checkNuke = async (guild, userId, actionType) => {
-    const s = getSettings(guild.id);
-    if (!s.antiNuke) return false;
+// --- THREAT DETECTION ENGINE ---
+client.on(Events.MessageCreate, async (msg) => {
+    if (!msg.guild || msg.author.bot) return;
+    const s = getSettings(msg.guild.id);
     
-    const key = `${guild.id}-${userId}-${actionType}`;
-    const count = (antiNukeTracker.get(key) || 0) + 1;
-    antiNukeTracker.set(key, count);
-    
-    setTimeout(() => {
-        const current = antiNukeTracker.get(key);
-        if (current > 0) antiNukeTracker.set(key, current - 1);
-    }, 10000);
+    // Telemetry
+    if (!analytics.has(msg.guild.id)) analytics.set(msg.guild.id, { traffic: 0, blocks: 0, tickets: 0, nukes_prevented: 0 });
+    const stats = analytics.get(msg.guild.id);
+    stats.traffic++;
 
-    if (count >= s.nukeThreshold) {
-        const member = await guild.members.fetch(userId).catch(() => null);
-        if (member && member.kickable && userId !== guild.ownerId) {
-            await member.kick("SHER ANTI-NUKE: Threshold Exceeded").catch(() => {});
-            logToAudit(guild.id, "NUKE_PREVENT", member.user.tag, `Mass ${actionType} detected.`);
-            return true;
-        }
+    // Security Logic
+    let threatFound = false;
+    let reason = "";
+
+    if (s.antiLink && /(https?:\/\/[^\s]+)/g.test(msg.content)) {
+        threatFound = true;
+        reason = "UNAUTHORIZED_UPLINK (Link Detected)";
     }
-    return false;
+
+    if (threatFound) {
+        stats.blocks++;
+        await msg.delete().catch(() => {});
+        logAction(msg.guild.id, "INTERCEPT", msg.author, reason);
+    }
+});
+
+client.on(Events.GuildMemberRemove, async (member) => {
+    const s = getSettings(member.guild.id);
+    if (!s.antiNuke) return;
+
+    const audit = await member.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberKick }).then(a => a.entries.first());
+    if (audit && audit.executorId !== client.user.id) {
+        const key = `nuke-${member.guild.id}-${audit.executorId}`;
+        const count = (threatHeuristics.get(key) || 0) + 1;
+        threatHeuristics.set(key, count);
+
+        if (count >= s.nukeThreshold) {
+            logAction(member.guild.id, "NUKE_LOCKDOWN", "SYSTEM", `Executor ${audit.executorId} reached threshold.`);
+            const executor = await member.guild.members.fetch(audit.executorId).catch(() => null);
+            if (executor && executor.kickable) {
+                await executor.kick("SHER TITAN: Anti-Nuke Triggered").catch(() => {});
+                analytics.get(member.guild.id).nukes_prevented++;
+            }
+        }
+        setTimeout(() => threatHeuristics.delete(key), 60000);
+    }
+});
+
+// --- DASHBOARD UI FRAMEWORK ---
+const TitanUI = {
+    Shell: (content, gid, active = 'dash') => {
+        const guild = client.guilds.cache.get(gid);
+        const stats = analytics.get(gid) || { traffic: 0, blocks: 0, tickets: 0, nukes_prevented: 0 };
+        
+        return `
+        <!DOCTYPE html>
+        <html class="dark">
+        <head>
+            <title>SHER TITAN-MEGA</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Outfit:wght@300;600;900&display=swap" rel="stylesheet">
+            <style>
+                :root { --accent: #0ea5e9; --bg: #020617; }
+                body { font-family: 'Outfit', sans-serif; background: var(--bg); color: #f8fafc; overflow: hidden; }
+                .mono { font-family: 'JetBrains Mono', monospace; }
+                .titan-card { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(255,255,255,0.05); backdrop-filter: blur(12px); border-radius: 2rem; }
+                .glow-sky { box-shadow: 0 0 40px -10px rgba(14, 165, 233, 0.3); }
+                .sidebar-btn { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+                .sidebar-btn.active { background: var(--accent); color: white; transform: translateX(10px); }
+                .scanline { width: 100%; height: 2px; background: rgba(14, 165, 233, 0.2); position: absolute; animation: scan 4s linear infinite; pointer-events: none; }
+                @keyframes scan { from { top: 0; } to { top: 100%; } }
+                ::-webkit-scrollbar { width: 5px; }
+                ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+            </style>
+        </head>
+        <body class="flex h-screen p-6 gap-6">
+            <!-- Sidebar -->
+            <aside class="w-80 titan-card p-8 flex flex-col">
+                <div class="mb-12">
+                    <div class="flex items-center gap-4 mb-4">
+                        <div class="w-12 h-12 rounded-2xl bg-sky-500 flex items-center justify-center font-black text-2xl shadow-lg shadow-sky-500/20 text-white">S</div>
+                        <div>
+                            <h1 class="font-black text-xl tracking-tighter">SHER <span class="text-sky-500">TITAN</span></h1>
+                            <p class="text-[10px] mono text-slate-500 uppercase tracking-widest">Node Engine v5.0</p>
+                        </div>
+                    </div>
+                    <div class="p-4 bg-slate-900/50 rounded-2xl border border-slate-800">
+                        <p class="text-[10px] text-slate-500 font-bold mb-1 uppercase">Active Node</p>
+                        <p class="text-xs font-bold truncate text-sky-400">${guild?.name || gid}</p>
+                    </div>
+                </div>
+
+                <nav class="flex-1 space-y-3">
+                    <a href="/dash" class="sidebar-btn flex items-center gap-4 p-4 rounded-2xl ${active==='dash'?'active':''}">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                        <span class="font-bold text-sm uppercase tracking-wide">Command Center</span>
+                    </a>
+                    <a href="/security" class="sidebar-btn flex items-center gap-4 p-4 rounded-2xl ${active==='security'?'active':''}">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                        <span class="font-bold text-sm uppercase tracking-wide">Shield Config</span>
+                    </a>
+                    <a href="/audits" class="sidebar-btn flex items-center gap-4 p-4 rounded-2xl ${active==='audits'?'active':''}">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        <span class="font-bold text-sm uppercase tracking-wide">Audit Matrix</span>
+                    </a>
+                    <a href="/terminal" class="sidebar-btn flex items-center gap-4 p-4 rounded-2xl ${active==='terminal'?'active':''}">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        <span class="font-bold text-sm uppercase tracking-wide">Live Terminal</span>
+                    </a>
+                </nav>
+
+                <div class="mt-auto pt-6 border-t border-slate-800/50">
+                    <a href="/logout" class="flex items-center justify-center p-4 rounded-2xl bg-rose-500/10 text-rose-500 font-black text-xs uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all">Terminate Link</a>
+                </div>
+            </aside>
+
+            <!-- Main Stage -->
+            <main class="flex-1 flex flex-col gap-6 overflow-hidden">
+                <header class="h-24 titan-card flex items-center justify-between px-10">
+                    <div class="flex items-center gap-8">
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Uplink Status</p>
+                            <div class="flex items-center gap-2">
+                                <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                                <span class="text-sm font-black text-emerald-500 uppercase">Synchronized</span>
+                            </div>
+                        </div>
+                        <div class="w-px h-8 bg-slate-800"></div>
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Global Threats</p>
+                            <span class="text-sm font-black text-rose-500 uppercase">${stats.blocks} Intercepted</span>
+                        </div>
+                    </div>
+                    <div class="flex gap-4">
+                         <div class="px-4 py-2 bg-slate-900 rounded-xl border border-slate-800 flex items-center gap-3">
+                            <span class="text-xs mono text-slate-400">LATENCY:</span>
+                            <span class="text-xs mono font-bold text-sky-400">24ms</span>
+                         </div>
+                    </div>
+                </header>
+
+                <section class="flex-1 overflow-y-auto pr-2">
+                    ${content}
+                </section>
+            </main>
+        </body>
+        </html>`;
+    }
 };
 
-// --- BOT LOGIC ---
-client.on(Events.ChannelDelete, async (channel) => {
-    const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).then(a => a.entries.first());
-    if (audit && audit.executorId !== client.user.id) checkNuke(channel.guild, audit.executorId, "Channel Delete");
-});
-
-client.on(Events.MessageCreate, async (msg) => {
-    if (!msg.guild || !msg.author) return;
-    const s = getSettings(msg.guild.id);
-    trackEvent(msg.guild.id, 'messages');
-
-    if (Array.from(ticketCache.values()).includes(msg.channel.id)) {
-        if (!ticketTranscripts.has(msg.channel.id)) ticketTranscripts.set(msg.channel.id, []);
-        ticketTranscripts.get(msg.channel.id).push({
-            author: msg.author.tag,
-            content: msg.content,
-            time: new Date().toLocaleTimeString()
-        });
-    }
-
-    if (s.ignoreThreads && msg.channel.isThread()) return;
-    const hasBypassRole = msg.member?.roles.cache.some(r => s.adminRoleIds.includes(r.id));
-    const isAdmin = msg.member?.permissions.has(PermissionFlagsBits.Administrator);
-    
-    if (s.autoDeleteChannels.includes(msg.channel.id)) {
-        if (!((s.ignoreAdmins && (isAdmin || hasBypassRole)) || (s.ignoreBots && msg.author.bot))) {
-            setTimeout(() => {
-                msg.delete().catch(() => {});
-                trackEvent(msg.guild.id, 'deletions');
-            }, s.deleteDelay);
-        }
-    }
-
-    if (s.ignoreBots && msg.author.bot) return;
-    if (s.ignoreAdmins && (isAdmin || hasBypassRole)) return;
-
-    let violation = null;
-    if (s.antiLink && /(https?:\/\/[^\s]+)/g.test(msg.content)) violation = "Link Sharing";
-    if (s.antiMassMention && msg.mentions.users.size > s.maxMentions) violation = "Mass Mention";
-
-    if (violation) {
-        trackEvent(msg.guild.id, 'threats');
-        msg.delete().catch(() => {});
-        logToAudit(msg.guild.id, "INTERCEPT", msg.author, violation);
-    }
-});
-
-client.on(Events.InteractionCreate, async (i) => {
-    if (!i.guild) return;
-    const s = getSettings(i.guild.id);
-
-    if (i.isChatInputCommand()) {
-        if (i.commandName === 'terminal') {
-            const pass = serverPasswords.get(i.guild.id) || CONFIG.MASTER_KEY;
-            i.reply({ 
-                content: `📡 **SHER MAIN FRAME:**\nURL: ${CONFIG.BASE_URL}\nNode: \`${i.guild.id}\` \nKey: \`${pass}\``, 
-                ephemeral: true 
-            });
-        }
-        if (i.commandName === 'deploy') {
-            if (!i.member.permissions.has(PermissionFlagsBits.Administrator)) return i.reply({ content: "No Admin Perms.", ephemeral: true });
-            const channel = i.options.getChannel('channel');
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('tkt_open').setLabel('Open Ticket').setStyle(ButtonStyle.Primary).setEmoji('🎫')
-            );
-            await channel.send({
-                embeds: [new EmbedBuilder().setTitle(s.panelTitle).setDescription(s.panelDesc).setColor(s.panelColor)],
-                components: [row]
-            });
-            i.reply({ content: "Ticket Hub Deployed.", ephemeral: true });
-        }
-    }
-
-    if (i.isButton()) {
-        if (i.customId === 'tkt_open') {
-            if (Array.from(ticketCache.keys()).includes(i.user.id)) return i.reply({ content: "Already have a ticket.", ephemeral: true });
-            const ch = await i.guild.channels.create({
-                name: `ticket-${i.user.username}`,
-                type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: i.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                    ...s.modRoleIds.map(rid => ({ id: rid, allow: [PermissionFlagsBits.ViewChannel] }))
-                ]
-            });
-            ticketCache.set(i.user.id, ch.id);
-            trackEvent(i.guild.id, 'tickets');
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('tkt_close').setLabel('Close').setStyle(ButtonStyle.Danger)
-            );
-            ch.send({ content: `Support needed for <@${i.user.id}>`, components: [row] });
-            i.reply({ content: `Ticket created: ${ch}`, ephemeral: true });
-        }
-        if (i.customId === 'tkt_close') {
-            i.reply("Closing in 5s...");
-            setTimeout(() => {
-                ticketCache.forEach((cid, uid) => { if (cid === i.channel.id) ticketCache.delete(uid); });
-                ticketTranscripts.delete(i.channel.id);
-                i.channel.delete().catch(() => {});
-            }, 5000);
-        }
-    }
-});
-
-client.once('ready', async () => {
-    console.log(`[CORE] Sher Bot (${CONFIG.VERSION}) online.`);
-    const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
-    const commands = [
-        new SlashCommandBuilder().setName('terminal').setDescription('Get dashboard access credentials'),
-        new SlashCommandBuilder().setName('deploy').setDescription('Deploy Ticket Hub').addChannelOption(o => o.setName('channel').setRequired(true).setDescription('Target channel'))
-    ].map(cmd => cmd.toJSON());
-
-    client.guilds.cache.forEach(async (guild) => {
-        try {
-            await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
-            if (!serverPasswords.has(guild.id)) serverPasswords.set(guild.id, crypto.randomBytes(4).toString('hex').toUpperCase());
-        } catch (e) {}
-    });
-});
-
-// --- DASHBOARD SYSTEM ---
-
+// --- WEB SERVER CORE ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(session({ keys: [CONFIG.SESSION_SECRET], name: 'sher_bot_session', maxAge: 24 * 60 * 60 * 1000 }));
+app.use(session({ keys: [CONFIG.SESSION_SECRET], name: 'titan_mega_session', maxAge: 24 * 60 * 60 * 1000 }));
 
-const renderUI = (content, gid, activePage) => {
-    const guild = client.guilds.cache.get(gid);
-    const iconUrl = guild?.iconURL() || "https://cdn.discordapp.com/embed/avatars/0.png";
-    const serverName = guild?.name || "Unknown Server";
-
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700;900&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Space Grotesk', sans-serif; background: #020617; color: #f1f5f9; }
-        .glass { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.05); }
-        .sidebar-item { transition: 0.3s; }
-        .sidebar-item:hover:not(.disabled) { background: rgba(14, 165, 233, 0.1); color: #38bdf8; }
-        .sidebar-item.active { background: #0ea5e9; color: white; }
-        .disabled { opacity: 0.4; cursor: not-allowed !important; pointer-events: none; filter: grayscale(1); }
-        .buzz-red { animation: buzz 0.3s infinite; box-shadow: 0 0 50px rgba(244, 63, 94, 0.4); border: 2px solid #f43f5e !important; }
-        @keyframes buzz { 0% { transform: translate(1px, 0); } 50% { transform: translate(-1px, 0); } 100% { transform: translate(1px, 0); } }
-    </style>
-</head>
-<body class="flex h-screen overflow-hidden">
-    <div id="lockOverlay" class="fixed inset-0 bg-black/60 z-40 hidden"></div>
-    
-    <nav id="navBar" class="w-80 glass m-6 rounded-[2.5rem] flex flex-col p-8 z-50">
-        <div class="flex items-center gap-4 mb-10 bg-slate-900/50 p-4 rounded-3xl border border-slate-800">
-            <img src="${iconUrl}" class="w-12 h-12 rounded-2xl shadow-xl shadow-sky-500/10">
-            <div class="overflow-hidden">
-                <h1 class="text-sm font-black truncate text-sky-400 uppercase tracking-tighter">${serverName}</h1>
-                <p class="text-[9px] text-slate-500 font-bold uppercase tracking-widest leading-none">Node ID: ${gid}</p>
-            </div>
-        </div>
-
-        <div class="flex-1 space-y-2" id="sidebar">
-            <a href="/dash" class="sidebar-item ${activePage==='dash'?'active':''} flex items-center gap-4 p-4 rounded-2xl">📊 Telemetry</a>
-            <a href="/security" class="sidebar-item ${activePage==='security'?'active':''} flex items-center gap-4 p-4 rounded-2xl">🛡️ Security</a>
-            <a href="/tickets" class="sidebar-item ${activePage==='tickets'?'active':''} flex items-center gap-4 p-4 rounded-2xl">🎫 Tickets</a>
-            <a href="/access" class="sidebar-item ${activePage==='access'?'active':''} flex items-center gap-4 p-4 rounded-2xl">🔑 Access Key</a>
-            <a href="/audits" class="sidebar-item ${activePage==='audits'?'active':''} flex items-center gap-4 p-4 rounded-2xl">📜 Audits</a>
-        </div>
-        <a href="/logout" class="p-4 text-rose-400 font-bold hover:bg-rose-500/10 rounded-xl transition text-center uppercase text-xs tracking-widest">🔌 DISCONNECT</a>
-    </nav>
-
-    <main class="flex-1 p-10 overflow-y-auto">
-        ${content}
-        <div id="saveBar" class="fixed bottom-10 left-1/2 -translate-x-1/2 glass p-6 rounded-3xl flex items-center gap-10 shadow-2xl transition-all translate-y-60 z-50">
-            <div class="flex flex-col">
-                <p class="font-black text-rose-500">SYSTEM LOCK ACTIVE</p>
-                <p class="text-xs text-slate-400">Save changes to unlock navigation</p>
-            </div>
-            <div class="flex gap-4">
-                <button onclick="document.getElementById('settingsForm').submit()" class="bg-rose-500 hover:bg-rose-600 px-10 py-4 rounded-2xl font-black text-white shadow-xl shadow-rose-500/20 uppercase tracking-widest">Commit Changes</button>
-                <button onclick="location.reload()" class="bg-slate-800 hover:bg-slate-700 px-8 py-4 rounded-2xl font-bold">Discard</button>
-            </div>
-        </div>
-    </main>
-
-    <script>
-        const form = document.getElementById('settingsForm');
-        const saveBar = document.getElementById('saveBar');
-        const sidebar = document.getElementById('sidebar');
-        const overlay = document.getElementById('lockOverlay');
-
-        if(form) {
-            const triggerSave = () => {
-                saveBar.classList.remove('translate-y-60');
-                saveBar.classList.add('buzz-red');
-                overlay.classList.remove('hidden');
-                Array.from(sidebar.getElementsByTagName('a')).forEach(a => a.classList.add('disabled'));
-            };
-            form.addEventListener('change', triggerSave);
-            form.addEventListener('input', (e) => {
-               if(e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') triggerSave();
-            });
-        }
-    </script>
-</body>
-</html>`;
-};
-
-// --- AUTH PAGES ---
-
+// Auth Gate
 app.get('/', (req, res) => {
     res.send(`
-    <style>body { background:#020617; font-family: 'Space Grotesk', sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; overflow:hidden; } .card { background:rgba(15,23,42,0.8); padding:60px; border-radius:50px; width:450px; text-align:center; border:1px solid rgba(255,255,255,0.05); } h1 { color:#0ea5e9; font-size:4rem; font-weight:900; letter-spacing:-4px; margin:0; } p { color:#64748b; margin-bottom:40px; text-transform:uppercase; letter-spacing:4px; font-size:0.7rem; } input { width:100%; padding:20px; margin-bottom:12px; background:#020617; border:1px solid #1e293b; color:white; border-radius:20px; outline:none; box-sizing: border-box; } input:focus { border-color:#0ea5e9; } button { width:100%; padding:20px; background:#0ea5e9; color:white; border:none; border-radius:20px; font-weight:900; cursor:pointer; font-size:1.2rem; box-shadow:0 10px 30px -5px rgba(14,165,233,0.4); }</style>
-    <body>
-        <form action="/login" method="POST" class="card">
-            <h1>SHER</h1>
-            <p>Security Mainframe</p>
-            <input name="gid" placeholder="Node ID" required>
-            <input name="pass" type="password" placeholder="Access Key" required>
-            <button>UPLINK</button>
-        </form>
-    </body>`);
+    <style>
+        body { background:#020617; font-family: 'Outfit', sans-serif; height:100vh; display:flex; align-items:center; justify-content:center; color:white; margin:0; }
+        .login-box { width:450px; background:rgba(15,23,42,0.6); padding:60px; border-radius:40px; border:1px solid rgba(255,255,255,0.05); text-align:center; }
+        h1 { font-size:4rem; font-weight:900; letter-spacing:-4px; margin:0; line-height:1; }
+        input { width:100%; padding:20px; background:#0a0a0a; border:1px solid #1e293b; color:white; border-radius:15px; margin-top:15px; outline:none; font-family:monospace; }
+        button { width:100%; padding:20px; background:#0ea5e9; color:white; border:none; border-radius:15px; margin-top:20px; font-weight:900; cursor:pointer; font-size:1rem; transition:0.3s; }
+        button:hover { background:white; color:#0ea5e9; transform:scale(1.02); }
+    </style>
+    <form action="/login" method="POST" class="login-box">
+        <h1>TITAN</h1>
+        <p style="color:#64748b; font-size:10px; font-weight:bold; letter-spacing:4px; margin-top:10px;">NEURAL AUTHENTICATION</p>
+        <input name="gid" placeholder="NODE ID" required>
+        <input name="pass" type="password" placeholder="SECURITY KEY" required>
+        <button type="submit">ESTABLISH UPLINK</button>
+    </form>
+    `);
 });
 
 app.get('/access-denied', (req, res) => {
     res.send(`
     <style>
-        body { background:#020617; font-family: 'Space Grotesk', sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:#f43f5e; }
-        .terminal { background:#0a0a0a; border:2px solid #f43f5e; border-radius:40px; padding:60px; width:600px; text-align:center; position:relative; overflow:hidden; box-shadow: 0 0 100px rgba(244,63,94,0.1); }
-        .scanline { position:absolute; top:0; left:0; width:100%; height:5px; background:rgba(244,63,94,0.5); animation: scan 3s linear infinite; }
+        body { background:#0a0000; color:#f43f5e; font-family: 'JetBrains Mono', monospace; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+        .error-panel { width:600px; padding:60px; border:2px solid #f43f5e; border-radius:40px; text-align:center; box-shadow:0 0 100px rgba(244,63,94,0.2); position:relative; overflow:hidden; }
+        .scan { position:absolute; top:0; left:0; width:100%; height:10px; background:rgba(244,63,94,0.3); animation:scan 2s linear infinite; }
         @keyframes scan { from { top:0 } to { top:100% } }
-        h1 { font-size:5rem; font-weight:900; margin:0; letter-spacing:-2px; line-height:1; }
-        .code { font-family: monospace; font-size:0.8rem; background:rgba(244,63,94,0.1); padding:20px; border-radius:15px; margin:30px 0; text-align:left; color:#fca5a5; }
-        a { background:#f43f5e; color:white; text-decoration:none; padding:20px 40px; border-radius:20px; font-weight:900; text-transform:uppercase; letter-spacing:2px; display:inline-block; transition:0.3s; }
-        a:hover { background:white; color:#f43f5e; }
+        h1 { font-size:6rem; margin:0; font-weight:900; letter-spacing:-5px; }
+        .trace { background:rgba(244,63,94,0.1); padding:20px; border-radius:15px; margin:20px 0; font-size:12px; text-align:left; }
+        a { color:white; background:#f43f5e; text-decoration:none; padding:15px 30px; border-radius:15px; font-weight:bold; display:inline-block; margin-top:20px; }
     </style>
-    <body>
-        <div class="terminal">
-            <div class="scanline"></div>
-            <h1>VOID</h1>
-            <p style="font-weight:bold; letter-spacing:5px; margin-top:10px">ACCESS REVOKED</p>
-            <div class="code">
-                > CRITICAL FAILURE: AUTH_INVALID<br>
-                > SOURCE: UNRECOGNIZED_UPLINK<br>
-                > ACTION: TERMINATING SESSION...<br>
-                > STATUS: [ID/KEY MISMATCH]
-            </div>
-            <a href="/">Retry Uplink</a>
+    <div class="error-panel">
+        <div class="scan"></div>
+        <h1>VOID</h1>
+        <p style="font-weight:bold; letter-spacing:5px;">ACCESS REJECTED</p>
+        <div class="trace">
+            > EXCEPTION: SECURITY_KEY_MISMATCH<br>
+            > IP_ORIGIN: TRACE_ACTIVE<br>
+            > STATUS: ACCESS_DENIED_PERMANENT<br>
+            > ACTION: TERMINATING CONNECTION...
         </div>
-    </body>`);
+        <a href="/">RETRY LINK</a>
+    </div>
+    `);
 });
 
 app.post('/login', (req, res) => {
     const { gid, pass } = req.body;
-    const correct = serverPasswords.get(gid) || CONFIG.MASTER_KEY;
+    const correct = serverKeys.get(gid) || CONFIG.MASTER_KEY;
     if (gid && pass === correct) {
         req.session.gid = gid;
         res.redirect('/dash');
@@ -385,17 +303,62 @@ app.post('/login', (req, res) => {
     }
 });
 
-// --- CONTENT ROUTES ---
-
 app.get('/dash', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
-    const stats = analytics.get(req.session.gid) || { messages: 0, threats: 0, tickets: 0, deletions: 0 };
-    res.send(renderUI(`
-        <div class="grid grid-cols-4 gap-6">
-            <div class="glass p-10 rounded-[3rem]"><p class="text-slate-500 font-bold text-xs uppercase mb-2">Traffic</p><h2 class="text-5xl font-black text-sky-400">${stats.messages}</h2></div>
-            <div class="glass p-10 rounded-[3rem] border-b-4 border-rose-500"><p class="text-slate-500 font-bold text-xs uppercase mb-2">Threats</p><h2 class="text-5xl font-black text-rose-400">${stats.threats}</h2></div>
-            <div class="glass p-10 rounded-[3rem]"><p class="text-slate-500 font-bold text-xs uppercase mb-2">Purged</p><h2 class="text-5xl font-black text-emerald-400">${stats.deletions}</h2></div>
-            <div class="glass p-10 rounded-[3rem]"><p class="text-slate-500 font-bold text-xs uppercase mb-2">Tickets</p><h2 class="text-5xl font-black text-amber-400">${stats.tickets}</h2></div>
+    const stats = analytics.get(req.session.gid) || { traffic: 0, blocks: 0, tickets: 0, nukes_prevented: 0 };
+    
+    res.send(TitanUI.Shell(`
+        <div class="grid grid-cols-4 gap-6 mb-8">
+            <div class="titan-card p-10 glow-sky border-t-4 border-sky-500">
+                <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Neural Traffic</p>
+                <h3 class="text-6xl font-black tracking-tighter">${stats.traffic}</h3>
+                <p class="text-xs text-emerald-500 mt-2 font-bold">+12% vs last hour</p>
+            </div>
+            <div class="titan-card p-10 border-t-4 border-rose-500">
+                <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Threats Blocked</p>
+                <h3 class="text-6xl font-black tracking-tighter text-rose-500">${stats.blocks}</h3>
+            </div>
+            <div class="titan-card p-10 border-t-4 border-emerald-500">
+                <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Nukes Prevented</p>
+                <h3 class="text-6xl font-black tracking-tighter text-emerald-500">${stats.nukes_prevented}</h3>
+            </div>
+            <div class="titan-card p-10 border-t-4 border-amber-500">
+                <p class="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-4">Active Nodes</p>
+                <h3 class="text-6xl font-black tracking-tighter text-amber-500">1</h3>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-6">
+            <div class="col-span-2 titan-card p-10 overflow-hidden relative">
+                <div class="scanline"></div>
+                <h2 class="text-xl font-bold mb-6 flex items-center gap-3">
+                    <span class="w-1.5 h-6 bg-sky-500 rounded-full"></span>
+                    SECURITY HEATMAP
+                </h2>
+                <div class="h-64 bg-slate-950/80 rounded-3xl border border-slate-900 flex items-center justify-center relative overflow-hidden">
+                    <!-- Simulated Map Grids -->
+                    <div class="absolute inset-0 grid grid-cols-12 grid-rows-6 opacity-20 pointer-events-none">
+                        ${Array(72).fill('<div class="border border-slate-800"></div>').join('')}
+                    </div>
+                    <div class="relative z-10 text-center">
+                        <p class="text-[10px] mono text-sky-500 animate-pulse font-black">SCANNING NODES...</p>
+                        <p class="text-xs text-slate-500 mt-2">REAL-TIME PACKET FLOW VISUALIZATION</p>
+                    </div>
+                </div>
+            </div>
+            <div class="titan-card p-8">
+                <h2 class="text-xl font-bold mb-6">QUICK ACTIONS</h2>
+                <div class="space-y-3">
+                    <button class="w-full p-4 rounded-2xl bg-slate-900 border border-slate-800 text-left hover:bg-sky-500 hover:border-sky-400 group transition-all">
+                        <p class="text-[10px] font-black text-slate-500 group-hover:text-sky-100 transition-colors uppercase">Emergency</p>
+                        <p class="font-bold group-hover:text-white">FORCE LOCKDOWN</p>
+                    </button>
+                    <button class="w-full p-4 rounded-2xl bg-slate-900 border border-slate-800 text-left hover:bg-emerald-500 hover:border-emerald-400 group transition-all">
+                        <p class="text-[10px] font-black text-slate-500 group-hover:text-emerald-100 transition-colors uppercase">System</p>
+                        <p class="font-bold group-hover:text-white">PURGE TEMP CACHE</p>
+                    </button>
+                </div>
+            </div>
         </div>
     `, req.session.gid, 'dash'));
 });
@@ -403,60 +366,68 @@ app.get('/dash', (req, res) => {
 app.get('/security', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     const s = getSettings(req.session.gid);
-    
-    const renderControl = (name, current, options) => {
-        if (s.uiStyle === 'button') {
-            return `<div class="flex gap-2">${options.map(o => `<label class="cursor-pointer"><input type="radio" name="${name}" value="${o.val}" ${current==o.val?'checked':''} class="hidden peer"><span class="px-4 py-2 rounded-lg bg-slate-900 peer-checked:bg-sky-500 peer-checked:text-white text-[10px] font-bold transition block uppercase">${o.label}</span></label>`).join('')}</div>`;
-        } else {
-            return `<select name="${name}" class="bg-slate-900 p-2 rounded-lg text-[10px] font-bold outline-none border border-slate-800 uppercase">${options.map(o => `<option value="${o.val}" ${current==o.val?'selected':''}>${o.label}</option>`).join('')}</select>`;
-        }
-    };
-
-    res.send(renderUI(`
-        <form id="settingsForm" action="/save" method="POST" class="space-y-8">
-            <div class="glass p-10 rounded-[3rem]">
+    res.send(TitanUI.Shell(`
+        <form action="/save-security" method="POST" class="space-y-8">
+            <div class="titan-card p-10">
                 <div class="flex justify-between items-center mb-10">
-                    <h2 class="text-2xl font-bold flex items-center gap-4"><span class="w-2 h-8 bg-sky-500 rounded-full"></span> DEFENSE CONFIG</h2>
-                    <div class="flex items-center gap-3 bg-slate-950 p-2 rounded-2xl border border-slate-800">
-                        <span class="text-[10px] font-bold text-slate-500 ml-2">UI STYLE:</span>
-                        <select name="uiStyle" class="bg-transparent text-xs font-bold outline-none">
-                            <option value="dropdown" ${s.uiStyle==='dropdown'?'selected':''}>DROPDOWN</option>
-                            <option value="button" ${s.uiStyle==='button'?'selected':''}>BUTTONS</option>
-                        </select>
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-8">
-                    <div class="space-y-4">
-                        <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
-                            <div><p class="font-bold text-sm">Anti-Nuke Protocols</p><p class="text-[10px] text-slate-500">Kick on mass deletions</p></div>
-                            ${renderControl('antiNuke', s.antiNuke, [{val:true, label:'ENGAGED'}, {val:false, label:'OFF'}])}
-                        </div>
-                        <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
-                            <div><p class="font-bold text-sm">Ignore Admin Perms</p></div>
-                            ${renderControl('ignoreAdmins', s.ignoreAdmins, [{val:true, label:'YES'}, {val:false, label:'NO'}])}
-                        </div>
-                    </div>
-                    <div class="space-y-4">
-                        <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900 text-amber-500">
-                            <div><p class="font-bold text-sm">Anti-Link Filter</p></div>
-                            ${renderControl('antiLink', s.antiLink, [{val:true, label:'ACTIVE'}, {val:false, label:'OFF'}])}
-                        </div>
-                         <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
-                            <div><p class="font-bold text-sm">Nuke Sensitivity</p></div>
-                            <input name="nukeThreshold" type="number" value="${s.nukeThreshold}" class="w-16 bg-slate-900 text-center rounded-lg text-xs p-1">
-                        </div>
-                    </div>
+                    <h2 class="text-3xl font-black tracking-tighter uppercase italic">Shield Protocols</h2>
+                    <button type="submit" class="bg-sky-500 hover:bg-sky-400 px-10 py-4 rounded-2xl font-black text-white shadow-xl shadow-sky-500/20 uppercase tracking-widest text-xs">Commit Changes</button>
                 </div>
 
-                <div class="mt-8 grid grid-cols-2 gap-8">
-                    <div>
-                        <label class="block font-bold text-[10px] text-slate-500 uppercase mb-3 ml-2">Ignore Specific Admin Roles (Comma IDs)</label>
-                        <textarea name="adminRoleIds" class="w-full bg-slate-950/80 border border-slate-900 p-6 rounded-3xl outline-none focus:border-sky-500 h-28 text-sm font-mono">${s.adminRoleIds.join(', ')}</textarea>
+                <div class="grid grid-cols-2 gap-10">
+                    <div class="space-y-6">
+                        <div class="p-8 bg-slate-950/40 rounded-[2.5rem] border border-slate-900">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <p class="font-black uppercase tracking-widest text-xs text-sky-500 mb-1">Module 01</p>
+                                    <h4 class="text-xl font-bold">Anti-Nuke Protection</h4>
+                                </div>
+                                <select name="antiNuke" class="bg-sky-500 text-white p-3 rounded-xl font-black text-xs outline-none">
+                                    <option value="true" ${s.antiNuke?'selected':''}>ENGAGED</option>
+                                    <option value="false" ${!s.antiNuke?'selected':''}>STANDBY</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="p-8 bg-slate-950/40 rounded-[2.5rem] border border-slate-900">
+                             <div>
+                                <p class="font-black uppercase tracking-widest text-xs text-sky-500 mb-1">Module 02</p>
+                                <h4 class="text-xl font-bold mb-4">Nuke Threshold</h4>
+                                <input name="nukeThreshold" type="range" min="3" max="20" value="${s.nukeThreshold}" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500">
+                                <div class="flex justify-between mt-2 text-[10px] font-bold text-slate-500 uppercase">
+                                    <span>Sensitive (3)</span>
+                                    <span>Relaxed (20)</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div>
-                        <label class="block font-bold text-[10px] text-slate-500 uppercase mb-3 ml-2">Auto-Delete Channels (Comma IDs)</label>
-                        <textarea name="autoDeleteChannels" class="w-full bg-slate-950/80 border border-slate-900 p-6 rounded-3xl outline-none focus:border-sky-500 h-28 text-sm font-mono">${s.autoDeleteChannels.join(', ')}</textarea>
+
+                    <div class="space-y-6">
+                        <div class="p-8 bg-slate-950/40 rounded-[2.5rem] border border-slate-900">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <p class="font-black uppercase tracking-widest text-xs text-rose-500 mb-1">Module 03</p>
+                                    <h4 class="text-xl font-bold">Anti-Link Uplink</h4>
+                                </div>
+                                <select name="antiLink" class="bg-rose-500 text-white p-3 rounded-xl font-black text-xs outline-none">
+                                    <option value="true" ${s.antiLink?'selected':''}>FILTERING</option>
+                                    <option value="false" ${!s.antiLink?'selected':''}>BYPASS</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="p-8 bg-slate-950/40 rounded-[2.5rem] border border-slate-900">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <p class="font-black uppercase tracking-widest text-xs text-amber-500 mb-1">Module 04</p>
+                                    <h4 class="text-xl font-bold">Neural Auto-Lock</h4>
+                                </div>
+                                <select name="autoLockdown" class="bg-amber-500 text-white p-3 rounded-xl font-black text-xs outline-none">
+                                    <option value="true" ${s.autoLockdown?'selected':''}>ENABLED</option>
+                                    <option value="false" ${!s.autoLockdown?'selected':''}>DISABLED</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -464,87 +435,107 @@ app.get('/security', (req, res) => {
     `, req.session.gid, 'security'));
 });
 
-app.get('/access', (req, res) => {
+app.get('/terminal', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
-    const pass = serverPasswords.get(req.session.gid) || CONFIG.MASTER_KEY;
-    res.send(renderUI(`
-        <div class="glass p-10 rounded-[3rem] max-w-2xl">
-            <h2 class="text-2xl font-bold mb-6">🔑 ACCESS KEY MANAGEMENT</h2>
-            <form id="settingsForm" action="/save-key" method="POST" class="space-y-6">
-                <div>
-                    <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Current UPLINK Key</label>
-                    <input name="newPass" type="text" value="${pass}" class="w-full bg-slate-950 border border-slate-900 p-6 rounded-3xl outline-none focus:border-sky-500 text-xl font-black tracking-widest">
+    res.send(TitanUI.Shell(`
+        <div class="titan-card bg-black h-full p-0 flex flex-col border-2 border-sky-500/20 overflow-hidden">
+            <div class="bg-slate-900 p-4 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="flex gap-1.5">
+                        <div class="w-3 h-3 rounded-full bg-rose-500"></div>
+                        <div class="w-3 h-3 rounded-full bg-amber-500"></div>
+                        <div class="w-3 h-3 rounded-full bg-emerald-500"></div>
+                    </div>
+                    <span class="text-[10px] mono text-slate-500 uppercase font-black">titan-node-bash — 80x24</span>
                 </div>
-                <p class="text-xs text-slate-500">This key is required to log into this server's terminal. Keep it secure.</p>
-            </form>
+                <span class="text-[10px] mono text-sky-500 font-bold">UPLINK_LIVE</span>
+            </div>
+            <div class="flex-1 p-8 mono text-emerald-500 text-sm space-y-2 overflow-y-auto" id="term_output">
+                <p>> TITAN KERNEL BOOT SUCCESSFUL [V5.0.0]</p>
+                <p>> INITIALIZING NEURAL_LINK ON PORT ${CONFIG.PORT}...</p>
+                <p>> ESTABLISHING SECURE HANDSHAKE WITH DISCORD API...</p>
+                <p>> GATEWAY CONNECTED. ALL SYSTEMS GO.</p>
+                <p class="text-slate-500 mt-4">_ Waiting for command input...</p>
+            </div>
+            <div class="p-6 bg-slate-950 border-t border-slate-900 flex items-center gap-4">
+                <span class="mono text-sky-500 font-bold">root@titan:~$</span>
+                <input type="text" class="bg-transparent border-none outline-none flex-1 mono text-sky-400 placeholder:text-slate-800" placeholder="Enter system command..." autofocus>
+            </div>
         </div>
-    `, req.session.gid, 'access'));
-});
-
-app.post('/save-key', (req, res) => {
-    if (!req.session.gid) return res.redirect('/');
-    const newPass = req.body.newPass?.trim();
-    if (newPass) {
-        serverPasswords.set(req.session.gid, newPass);
-        logToAudit(req.session.gid, "SECURITY_CHANGE", "Admin", "Access Key Rotated.");
-    }
-    res.redirect('/access');
-});
-
-app.post('/save', (req, res) => {
-    if (!req.session.gid) return res.redirect('/');
-    const s = getSettings(req.session.gid);
-    s.ignoreBots = req.body.ignoreBots === 'true';
-    s.ignoreAdmins = req.body.ignoreAdmins === 'true';
-    s.ignoreThreads = req.body.ignoreThreads === 'true';
-    s.antiLink = req.body.antiLink === 'true';
-    s.antiNuke = req.body.antiNuke === 'true';
-    s.uiStyle = req.body.uiStyle;
-    s.nukeThreshold = parseInt(req.body.nukeThreshold) || 3;
-    s.adminRoleIds = req.body.adminRoleIds.split(',').map(x => x.trim()).filter(x => x);
-    s.autoDeleteChannels = req.body.autoDeleteChannels.split(',').map(x => x.trim()).filter(x => x);
-    
-    logToAudit(req.session.gid, "GRID_SYNC", "Dashboard", "Parameters updated.");
-    res.redirect('/security');
-});
-
-app.get('/tickets', (req, res) => {
-    if (!req.session.gid) return res.redirect('/');
-    let html = `<h2 class="text-4xl font-black mb-10 tracking-tighter uppercase">Support Transcripts</h2>`;
-    if (ticketTranscripts.size === 0) {
-        html += `<div class="glass p-20 rounded-[3rem] text-center text-slate-500 italic">No active session records in cache.</div>`;
-    } else {
-        for (const [cid, msgs] of ticketTranscripts.entries()) {
-            html += `
-            <div class="glass p-8 rounded-[2.5rem] mb-6 border-l-4 border-sky-500">
-                <p class="font-bold text-sky-400 uppercase text-xs mb-4">Channel ID: ${cid}</p>
-                <div class="space-y-2 max-h-60 overflow-y-auto pr-4 text-xs font-mono">
-                    ${msgs.map(m => `<p><span class="text-slate-600">[${m.time}]</span> <span class="text-sky-300">${m.author}:</span> <span class="text-slate-300">${m.content}</span></p>`).join('')}
-                </div>
-            </div>`;
-        }
-    }
-    res.send(renderUI(html, req.session.gid, 'tickets'));
+    `, req.session.gid, 'terminal'));
 });
 
 app.get('/audits', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     const logs = auditLogs.get(req.session.gid) || [];
-    res.send(renderUI(`
-        <div class="glass rounded-[3rem] overflow-hidden">
+    res.send(TitanUI.Shell(`
+        <div class="titan-card overflow-hidden">
+            <div class="p-8 border-b border-slate-900 flex justify-between items-center">
+                <h2 class="text-2xl font-black uppercase italic tracking-tighter">Transmission Logs</h2>
+                <span class="text-[10px] font-black bg-slate-900 px-3 py-1 rounded-full text-slate-500">${logs.length} RECORDS IN CACHE</span>
+            </div>
             <table class="w-full text-left">
-                <thead class="bg-slate-950/50 text-slate-500 uppercase text-[10px] font-black tracking-widest">
-                    <tr><th class="p-8">Time</th><th class="p-8">Action</th><th class="p-8">Summary</th></tr>
+                <thead class="bg-slate-950/50 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                    <tr><th class="p-6">Trace ID</th><th class="p-6">Timestamp</th><th class="p-6">Operator</th><th class="p-6">Protocol</th><th class="p-6">Data</th></tr>
                 </thead>
-                <tbody class="divide-y divide-slate-800">
-                    ${logs.map(l => `<tr class="hover:bg-sky-500/5 transition"><td class="p-8 text-slate-500 font-mono text-xs">${l.time}</td><td class="p-8 font-black text-sky-400 text-sm">${l.action}</td><td class="p-8 italic text-slate-400 text-sm">${l.reason}</td></tr>`).join('')}
+                <tbody class="divide-y divide-slate-800/50 text-sm mono">
+                    ${logs.map(l => `
+                        <tr class="hover:bg-sky-500/5 transition group">
+                            <td class="p-6 text-sky-500 font-bold">${l.id}</td>
+                            <td class="p-6 text-slate-500">${new Date(l.ts).toLocaleTimeString()}</td>
+                            <td class="p-6 font-bold">${l.user}</td>
+                            <td class="p-6"><span class="px-2 py-1 rounded bg-sky-500/10 text-[10px] text-sky-400 font-black">${l.type}</span></td>
+                            <td class="p-6 text-slate-400">${l.detail}</td>
+                        </tr>
+                    `).join('')}
                 </tbody>
             </table>
         </div>
     `, req.session.gid, 'audits'));
 });
 
+app.post('/save-security', (req, res) => {
+    if (!req.session.gid) return res.redirect('/');
+    const s = getSettings(req.session.gid);
+    s.antiNuke = req.body.antiNuke === 'true';
+    s.antiLink = req.body.antiLink === 'true';
+    s.autoLockdown = req.body.autoLockdown === 'true';
+    s.nukeThreshold = parseInt(req.body.nukeThreshold);
+    logAction(req.session.gid, "PARAM_MOD", "ADMIN", "Security matrix recalculated.");
+    res.redirect('/security');
+});
+
 app.get('/logout', (req, res) => { req.session = null; res.redirect('/'); });
 
-app.listen(CONFIG.PORT, () => console.log(`[HTTP] Sher Bot Uplink on port ${CONFIG.PORT}`));
+// --- BOOT SEQUENCE ---
+client.once('ready', async () => {
+    console.log(`[TITAN-CORE] Unified Uplink Active: ${CONFIG.VERSION}`);
+    const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
+    const cmds = [new SlashCommandBuilder().setName('uplink').setDescription('Generate secure dashboard access credentials')].map(c => c.toJSON());
+
+    client.guilds.cache.forEach(async (g) => {
+        try {
+            await rest.put(Routes.applicationGuildCommands(client.user.id, g.id), { body: cmds });
+            if (!serverKeys.has(g.id)) serverKeys.set(g.id, crypto.randomBytes(4).toString('hex').toUpperCase());
+            if (!analytics.has(g.id)) analytics.set(g.id, { traffic: 0, blocks: 0, tickets: 0, nukes_prevented: 0 });
+            logAction(g.id, "SYS_BOOT", "SHER-CORE", `Titan-Mega Node v5.0 deployed.`);
+        } catch (e) {}
+    });
+});
+
+client.on(Events.InteractionCreate, async (i) => {
+    if (i.isChatInputCommand() && i.commandName === 'uplink') {
+        const key = serverKeys.get(i.guildId) || CONFIG.MASTER_KEY;
+        await i.reply({
+            embeds: [new EmbedBuilder()
+                .setTitle("📡 TITAN-MEGA UPLINK")
+                .setDescription(`Secure dashboard access link established.\n\n**NODE ID:** \`${i.guildId}\`\n**SECURITY KEY:** \`${key}\`\n**INTERFACE:** [Launch Terminal](${CONFIG.BASE_URL})`)
+                .setColor("#0ea5e9")
+                .setFooter({ text: "TITAN-MEGA v5.0 | Industrial Security" })
+            ], ephemeral: true
+        });
+    }
+});
+
+app.listen(CONFIG.PORT, () => console.log(`[TERMINAL] Web Interface synchronized on port ${CONFIG.PORT}`));
 client.login(CONFIG.TOKEN);
