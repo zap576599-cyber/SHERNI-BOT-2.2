@@ -2,7 +2,7 @@
  * SHER BOT - TITAN-MEGA V-ELITE (OG RESTORED)
  * --------------------------------------------------------
  * A comprehensive security and management solution.
- * FIXED: Key Generation on boot & Aesthetic Error Screen
+ * FIXED: Web route handling & Command permissions
  */
 
 require('dotenv').config();
@@ -24,9 +24,13 @@ const CONFIG = {
     SESSION_SECRET: process.env.SESSION_SECRET || 'titan-mega-secret-v-elite',
 };
 
-const db = new Map(); // Guild Settings
-const serverKeys = new Map(); // Security Keys
+// State Management
+const db = new Map(); 
+const serverKeys = new Map(); 
 
+/**
+ * Retrieves or initializes guild settings
+ */
 const getSettings = (gid) => {
     if (!db.has(gid)) {
         db.set(gid, {
@@ -63,100 +67,139 @@ const generateKeyForGuild = (guildId) => {
 
 // --- DISCORD LOGIC ---
 
-// 1. Key generation on new guild join
+// 1. New Guild Setup
 client.on(Events.GuildCreate, async (guild) => {
     const key = generateKeyForGuild(guild.id);
     try {
         const owner = await guild.fetchOwner();
         const welcome = new EmbedBuilder()
             .setTitle("🛡️ SHER BOT | TITAN-MEGA DEPLOYED")
-            .setDescription(`Your node has been established in **${guild.name}**.`)
+            .setDescription(`Your node has been established in **${guild.name}**. Use the credentials below to access the management terminal.`)
             .addFields(
                 { name: "Node ID", value: `\`${guild.id}\``, inline: true },
                 { name: "Access Key", value: `\`${key}\``, inline: true }
             )
-            .setColor("#0ea5e9");
+            .setThumbnail(guild.iconURL())
+            .setColor("#0ea5e9")
+            .setFooter({ text: "TITAN-MEGA V-ELITE SECURITY" });
         await owner.send({ embeds: [welcome] });
-    } catch (e) { console.log(`DM failed for ${guild.id}`); }
+    } catch (e) { console.log(`[!] DM failed for guild ${guild.id}`); }
 });
 
-// 2. Auto-Deletion logic
+// 2. Firewall / Auto-Purge Logic
 client.on(Events.MessageCreate, async (msg) => {
-    if (!msg.guild) return;
+    if (!msg.guild || msg.author.bot) return;
     const s = getSettings(msg.guild.id);
-    if (s.ignoreBots && msg.author.bot) return;
+    
     if (s.ignoreAdmins && msg.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
 
+    // Word Filtering
     const hasForbidden = s.blacklistedWords.some(w => msg.content.toLowerCase().includes(w.toLowerCase()));
-    if (hasForbidden) return msg.delete().catch(() => {});
+    if (hasForbidden) {
+        return msg.delete().catch(() => {});
+    }
 
+    // Auto-Delete Timing
     const channelDel = s.autoDeleteChannels.find(c => c.id === msg.channel.id);
-    if (channelDel) setTimeout(() => msg.delete().catch(() => {}), channelDel.delay || 5000);
+    if (channelDel) {
+        setTimeout(() => msg.delete().catch(() => {}), channelDel.delay || 5000);
+    }
 });
 
-// 3. Slash Commands
+// 3. Command Interactions
 client.on(Events.InteractionCreate, async (i) => {
     if (!i.isChatInputCommand()) return;
     const s = getSettings(i.guildId);
     const { commandName, options } = i;
 
     if (commandName === 'terminal') {
+        // SECURITY FIX: Only Admins should see the key
+        if (!i.member.permissions.has(PermissionFlagsBits.Administrator)) {
+            return i.reply({ content: "Access Denied: High-level clearance required.", ephemeral: true });
+        }
+
         let key = serverKeys.get(i.guildId);
-        if(!key) key = generateKeyForGuild(i.guildId); // Fallback generation
-        return i.reply({ content: `📡 **Node ID:** \`${i.guildId}\`\n🔑 **Key:** \`${key}\``, ephemeral: true });
+        if(!key) key = generateKeyForGuild(i.guildId);
+        return i.reply({ 
+            content: `📡 **Node Uplink Established**\n**ID:** \`${i.guildId}\`\n**Key:** \`${key}\`\n\n*Keep these credentials private.*`, 
+            ephemeral: true 
+        });
     }
 
     if (commandName === 'lockdown') {
-        if (!i.member.permissions.has(PermissionFlagsBits.Administrator)) return i.reply("Access Denied.");
+        if (!i.member.permissions.has(PermissionFlagsBits.Administrator)) {
+            return i.reply({ content: "Insufficient clearance level.", ephemeral: true });
+        }
         const state = options.getBoolean('state');
         const role = i.guild.roles.everyone;
-        await role.setPermissions(state ? role.permissions.remove(PermissionFlagsBits.SendMessages) : role.permissions.add(PermissionFlagsBits.SendMessages));
-        s.lockdownActive = state;
-        return i.reply(`🚨 Lockdown: **${state ? 'ON' : 'OFF'}**`);
+        
+        try {
+            await role.setPermissions(state 
+                ? role.permissions.remove(PermissionFlagsBits.SendMessages) 
+                : role.permissions.add(PermissionFlagsBits.SendMessages)
+            );
+            s.lockdownActive = state;
+            return i.reply(`🚨 **Lockdown Protocol ${state ? 'ENABLED' : 'DISABLED'}**`);
+        } catch (e) {
+            return i.reply("Critical Error: Failed to modify server permissions.");
+        }
     }
 });
 
-// --- WEB INTERFACE (UPDATED AESTHETICS) ---
+// --- WEB INTERFACE (TITAN-UI) ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(session({ keys: [CONFIG.SESSION_SECRET], name: 'sher_session' }));
+app.use(session({ 
+    name: 'titan_sess',
+    keys: [CONFIG.SESSION_SECRET],
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+}));
 
 const UI_WRAPPER = (content, active = 'dash') => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
     <style>
         body { background: #020617; color: #f8fafc; font-family: 'Plus Jakarta Sans', sans-serif; }
         .glass { background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255,255,255,0.05); backdrop-filter: blur(12px); border-radius: 1.25rem; }
-        .nav-link { padding: 0.8rem 1.2rem; border-radius: 0.75rem; transition: 0.2s; color: #94a3b8; font-weight: 600; display: block; }
+        .nav-link { padding: 0.8rem 1.2rem; border-radius: 0.75rem; transition: 0.2s; color: #94a3b8; font-weight: 600; display: block; text-decoration: none; }
+        .nav-link:hover { color: white; background: rgba(255,255,255,0.03); }
         .nav-link.active { background: #0ea5e9; color: white; box-shadow: 0 4px 20px rgba(14, 165, 233, 0.2); }
     </style>
 </head>
 <body class="flex h-screen overflow-hidden">
     <nav class="w-72 border-r border-slate-800 p-8 flex flex-col gap-2">
-        <h1 class="text-2xl font-black italic text-sky-500 mb-10">SHER <span class="text-white">TITAN</span></h1>
+        <div class="mb-10 px-2">
+            <h1 class="text-2xl font-black italic text-sky-500">SHER <span class="text-white">TITAN</span></h1>
+            <p class="text-[10px] text-slate-500 font-bold tracking-widest uppercase mt-1">Mega V-Elite System</p>
+        </div>
         <a href="/dash" class="nav-link ${active==='dash'?'active':''}">Dashboard</a>
         <a href="/firewall" class="nav-link ${active==='firewall'?'active':''}">Firewall Matrix</a>
-        <a href="/logout" class="mt-auto nav-link text-rose-500">Disconnect</a>
+        <a href="/logout" class="mt-auto nav-link text-rose-500 hover:bg-rose-500/10">Disconnect</a>
     </nav>
     <main class="flex-1 p-12 overflow-y-auto">${content}</main>
 </body>
 </html>`;
 
-app.get('/', (req, res) => res.send(`
-    <body style="background:#020617; display:flex; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:white;">
-        <form action="/login" method="POST" style="background:#0f172a; padding:3.5rem; border-radius:2rem; width:400px; border:1px solid rgba(255,255,255,0.05); text-align:center;">
-            <div style="width:60px; height:60px; background:#0ea5e9; border-radius:1rem; margin:0 auto 2rem; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:1.5rem; box-shadow: 0 0 30px rgba(14,165,233,0.3);">S</div>
-            <h2 style="font-size:1.5rem; font-weight:900; margin-bottom:0.5rem;">Secure Login</h2>
-            <p style="color:#64748b; font-size:0.875rem; margin-bottom:2rem;">Establish encrypted uplink with Titan Node</p>
-            <input name="gid" placeholder="Node ID (Server ID)" required style="width:100%; padding:1.2rem; margin-bottom:1rem; border-radius:0.75rem; border:1px solid #1e293b; background:#020617; color:white;">
-            <input name="key" type="password" placeholder="Access Key" required style="width:100%; padding:1.2rem; margin-bottom:2rem; border-radius:0.75rem; border:1px solid #1e293b; background:#020617; color:white;">
-            <button style="width:100%; padding:1.2rem; border-radius:0.75rem; border:none; background:#0ea5e9; color:white; font-weight:900; cursor:pointer; transition: 0.3s;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">CONNECT</button>
+// Auth Routes
+app.get('/', (req, res) => {
+    if (req.session.gid) return res.redirect('/dash');
+    res.send(`
+    <body style="background:#020617; display:flex; align-items:center; justify-content:center; height:100vh; font-family:'Plus Jakarta Sans', sans-serif; color:white; margin:0;">
+        <form action="/login" method="POST" style="background:#0f172a; padding:3.5rem; border-radius:2.5rem; width:400px; border:1px solid rgba(255,255,255,0.05); text-align:center;">
+            <div style="width:64px; height:64px; background:#0ea5e9; border-radius:1.25rem; margin:0 auto 2rem; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:1.75rem;">S</div>
+            <h2 style="font-size:1.75rem; font-weight:800; margin-bottom:0.5rem;">Secure Login</h2>
+            <p style="color:#64748b; font-size:0.875rem; margin-bottom:2.5rem;">Establish encrypted uplink</p>
+            <input name="gid" placeholder="Node ID" required style="width:100%; padding:1.2rem; margin-bottom:1rem; border-radius:1rem; border:1px solid #1e293b; background:#020617; color:white; outline:none;">
+            <input name="key" type="password" placeholder="Access Key" required style="width:100%; padding:1.2rem; margin-bottom:2rem; border-radius:1rem; border:1px solid #1e293b; background:#020617; color:white; outline:none;">
+            <button style="width:100%; padding:1.2rem; border-radius:1rem; border:none; background:#0ea5e9; color:white; font-weight:800; cursor:pointer;">CONNECT</button>
         </form>
-    </body>
-`));
+    </body>`);
+});
 
 app.post('/login', (req, res) => {
     const { gid, key } = req.body;
@@ -166,34 +209,22 @@ app.post('/login', (req, res) => {
     } else res.redirect('/denied');
 });
 
-// AESTHETIC ERROR SCREEN
 app.get('/denied', (req, res) => res.send(`
-    <body style="background:#020617; display:flex; align-items:center; justify-content:center; height:100vh; font-family:sans-serif; color:white; text-align:center;">
-        <div style="background:#0f172a; padding:4rem; border-radius:2rem; border:1px solid #f43f5e; box-shadow: 0 0 50px rgba(244,63,94,0.1);">
-            <h1 style="color:#f43f5e; font-size:4rem; font-weight:900; margin-bottom:1rem;">403</h1>
-            <h2 style="font-size:1.5rem; font-weight:900; margin-bottom:1rem;">UPLINK REJECTED</h2>
-            <p style="color:#94a3b8; max-width:300px; margin-bottom:2rem;">Your credentials do not match the encrypted records on this node.</p>
-            <a href="/" style="display:inline-block; background:#1e293b; color:white; text-decoration:none; padding:1rem 2rem; border-radius:0.75rem; font-weight:bold;">RE-AUTHENTICATE</a>
+    <body style="background:#020617; display:flex; align-items:center; justify-content:center; height:100vh; font-family:'Plus Jakarta Sans', sans-serif; color:white; text-align:center;">
+        <div style="background:#0f172a; padding:4rem; border-radius:2.5rem; border:1px solid #f43f5e;">
+            <h1 style="color:#f43f5e; font-size:5rem; font-weight:900;">403</h1>
+            <h2 style="font-size:1.75rem; font-weight:800;">UPLINK REJECTED</h2>
+            <a href="/" style="display:inline-block; background:#1e293b; color:white; text-decoration:none; padding:1.2rem 2.5rem; border-radius:1rem; margin-top:2rem;">RE-AUTHENTICATE</a>
         </div>
     </body>
 `));
 
+// Protected Dashboard Routes
 app.get('/dash', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     const s = getSettings(req.session.gid);
-    res.send(UI_WRAPPER(`
-        <h2 class="text-4xl font-black mb-10">Command Center</h2>
-        <div class="grid grid-cols-2 gap-8">
-            <div class="glass p-10 border-l-4 border-sky-500">
-                <p class="text-slate-500 font-bold uppercase text-xs mb-2">Node Identification</p>
-                <h3 class="text-2xl font-black">${req.session.gid}</h3>
-            </div>
-            <div class="glass p-10 border-l-4 border-${s.lockdownActive?'rose-500':'emerald-500'}">
-                <p class="text-slate-500 font-bold uppercase text-xs mb-2">Shield Status</p>
-                <h3 class="text-2xl font-black">${s.lockdownActive?'CRITICAL LOCKDOWN':'SYSTEMS SECURE'}</h3>
-            </div>
-        </div>
-    `));
+    const guild = client.guilds.cache.get(req.session.gid);
+    res.send(UI_WRAPPER(`<h2 class="text-4xl font-black mb-10">Command Center</h2><div class="grid grid-cols-2 gap-8 mb-8"><div class="glass p-10 border-l-4 border-sky-500"><p class="text-slate-500 font-bold uppercase text-[10px] mb-2">Node ID</p><h3 class="text-3xl font-black">${req.session.gid}</h3></div><div class="glass p-10 border-l-4 ${s.lockdownActive ? 'border-rose-500' : 'border-emerald-500'}"><p class="text-slate-500 font-bold uppercase text-[10px] mb-2">Shield Status</p><h3 class="text-3xl font-black">${s.lockdownActive ? 'LOCKDOWN' : 'SECURE'}</h3></div></div>`));
 });
 
 app.get('/firewall', (req, res) => {
@@ -201,16 +232,16 @@ app.get('/firewall', (req, res) => {
     const s = getSettings(req.session.gid);
     const guild = client.guilds.cache.get(req.session.gid);
     const channels = guild ? guild.channels.cache.filter(c => c.type === ChannelType.GuildText) : [];
-    res.send(UI_WRAPPER(`<h2 class="text-4xl font-black mb-10">Matrix Settings</h2><div class="glass p-10">
-        <p class="mb-4 text-slate-400">Configure channel auto-purging nodes below.</p>
-        <form action="/add-autodel" method="POST" class="flex gap-4">
-            <select name="cid" class="flex-1 bg-slate-900 border border-slate-800 p-4 rounded-xl text-white">
-                ${channels.map(c => `<option value="${c.id}">#${c.name}</option>`).join('')}
-            </select>
-            <input name="delay" type="number" value="5000" class="w-32 bg-slate-900 border border-slate-800 p-4 rounded-xl text-white">
-            <button class="bg-sky-500 px-10 font-black rounded-xl uppercase text-xs">Deploy</button>
-        </form>
-    </div>`, 'firewall'));
+    res.send(UI_WRAPPER(`<h2 class="text-4xl font-black mb-10">Firewall Matrix</h2><div class="glass p-10 mb-8"><form action="/add-autodel" method="POST" class="flex gap-4"><select name="cid" class="flex-1 bg-slate-900 border border-slate-800 p-4 rounded-2xl text-white outline-none">${channels.map(c => `<option value="${c.id}">#${c.name}</option>`).join('')}</select><input name="delay" type="number" value="5000" class="w-40 bg-slate-900 border border-slate-800 p-4 rounded-2xl text-white outline-none"><button class="bg-sky-500 px-10 font-black rounded-2xl uppercase text-xs">Deploy</button></form></div>`, 'firewall'));
+});
+
+// FIX: Added handler for the firewall form
+app.post('/add-autodel', (req, res) => {
+    if (!req.session.gid) return res.redirect('/');
+    const { cid, delay } = req.body;
+    const s = getSettings(req.session.gid);
+    s.autoDeleteChannels.push({ id: cid, delay: parseInt(delay) });
+    res.redirect('/firewall');
 });
 
 app.get('/logout', (req, res) => { req.session = null; res.redirect('/'); });
@@ -218,25 +249,14 @@ app.get('/logout', (req, res) => { req.session = null; res.redirect('/'); });
 // --- BOOT SEQUENCE ---
 client.once('ready', async () => {
     console.log(`[BOOT] TITAN ONLINE: ${client.user.tag}`);
-    
-    // CRITICAL: Generate keys for all guilds already joined
-    client.guilds.cache.forEach(guild => {
-        if (!serverKeys.has(guild.id)) {
-            const key = generateKeyForGuild(guild.id);
-            console.log(`[KEYGEN] ${guild.name} (${guild.id}): ${key}`);
-        }
-    });
-
+    client.guilds.cache.forEach(guild => { if (!serverKeys.has(guild.id)) generateKeyForGuild(guild.id); });
     const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
     const commands = [
         new SlashCommandBuilder().setName('terminal').setDescription('View access credentials'),
-        new SlashCommandBuilder().setName('lockdown').setDescription('Toggle safety').addBooleanOption(o => o.setName('state').setRequired(true))
+        new SlashCommandBuilder().setName('lockdown').setDescription('Toggle message permissions').addBooleanOption(o => o.setName('state').setRequired(true))
     ].map(c => c.toJSON());
-
-    try {
-        await rest.put(Routes.applicationCommands(CONFIG.CLIENT_ID), { body: commands });
-    } catch (e) { console.error(e); }
+    try { await rest.put(Routes.applicationCommands(CONFIG.CLIENT_ID), { body: commands }); } catch (e) { console.error(e); }
 });
 
-app.listen(CONFIG.PORT, () => console.log(`[HTTP] Gateway active on ${CONFIG.PORT}`));
+app.listen(CONFIG.PORT, () => console.log(`[HTTP] Active on ${CONFIG.PORT}`));
 client.login(CONFIG.TOKEN);
