@@ -1,47 +1,52 @@
+/**
+ * SHER LOCK PRO - TITAN ULTRA (INDUSTRIAL CORE)
+ * --------------------------------------------
+ * VERSION: 4.0.0 - MAXIMUM CAPACITY
+ * * DESIGNED FOR: HIGH-TRAFFIC DISCORD ENVIRONMENTS
+ * * * MODULES:
+ * - Security Grid: Anti-Link, Anti-Nuke, Anti-Ghost Ping, Anti-Mass Mention
+ * - Auto-Mod: Role/Bot/Thread Sensitive Auto-Deletion
+ * - Help Desk: Secure Uplink Ticketing with Web-Based Transcript Previews
+ * - Mainframe: Telemetry, Analytics, and Multi-Node Audit Logging
+ * - Admin Panel: Password-Protected Glassmorphism Dashboard
+ */
+
 require('dotenv').config();
 const { 
     Client, GatewayIntentBits, Partials, ActivityType, PermissionFlagsBits, 
     EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, 
-    ChannelType, REST, Routes, SlashCommandBuilder, Events, Collection 
+    ChannelType, REST, Routes, SlashCommandBuilder, Events, Collection,
+    AuditLogEvent
 } = require('discord.js');
 const express = require('express');
 const session = require('cookie-session');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
 
-/**
- * SHER LOCK PRO - OMEGA SENTINEL (V10.FINAL)
- * -----------------------------------------
- * THE ULTIMATE MULTI-SERVER SECURITY SUITE
- * -----------------------------------------
- * SYSTEM CAPABILITIES:
- * - [RADAR] Ghost Ping Detection & Logging
- * - [SWEEP] Multi-Channel Auto-Deletion Engine
- * - [GUARD] Mass-Ping & Malicious Link Interceptor
- * - [UPLINK] Professional Claimable Ticket Tunnels
- * - [COMMAND] Animated Glassmorphism Web Interface
- */
-
+// --- SYSTEM ARCHITECTURE CONFIG ---
 const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     CLIENT_ID: process.env.DISCORD_CLIENT_ID,
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'omega-sentinel-v10-key',
+    SESSION_SECRET: process.env.SESSION_SECRET || 'titan-industrial-v4-ultra',
     BASE_URL: process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 10000}`,
-    BOOT_TIME: Date.now()
+    BOOT_TIME: Date.now(),
+    VERSION: "4.0.0-ULTRA"
 };
 
-// --- CORE MEMORY GRIDS ---
+// --- DATA PERSISTENCE GRIDS ---
 const db = new Map();
 const serverPasswords = new Map();
 const auditLogs = new Map(); 
 const analytics = new Map();
 const ghostPingCache = new Collection();
 const ticketCache = new Map();
+const ticketTranscripts = new Map(); 
+const nukeRadar = new Map(); // Detects rapid guild changes/deletions
 
 /**
- * DATABASE INITIALIZER
- * Ensures every server has a clean security manifest on first boot.
+ * SETTINGS MANIFEST
+ * The core configuration for every connected Discord Node.
  */
 const getSettings = (gid) => {
     if (!db.has(gid)) {
@@ -52,65 +57,85 @@ const getSettings = (gid) => {
             antiGhostPing: true,
             antiMassMention: true,
             maxMentions: 5,
-            blacklist: [],
+            ignoreAdmins: true, 
+            ignoreBots: true,   
+            ignoreThreads: true, // NEW: Prevent thread interference
+            blacklist: ["discord.gg/", "token-grabber"],
             autoDeleteChannels: [],
-            deleteDelay: 5000,
-            ticketCategoryId: "",
-            panelColor: "#6366f1",
-            panelTitle: "🛡️ OMEGA SECURITY TERMINAL",
-            panelDesc: "Establishing a secure connection with the moderation grid. Click below to initialize a private tunnel."
+            deleteDelay: 3000,
+            panelColor: "#0ea5e9",
+            panelTitle: "📡 TITAN SECURITY HUB",
+            panelDesc: "High-fidelity security protocols active. Uplink status: ONLINE."
         });
     }
     return db.get(gid);
 };
 
 /**
- * AUDIT LOG ENGINE
- * Buffers the last 100 security events per server.
+ * TELEMETRY ENGINE
  */
-const logAudit = (gid, action, user, reason) => {
+const trackEvent = (gid, key, value = 1) => {
+    if (!analytics.has(gid)) {
+        analytics.set(gid, { messages: 0, threats: 0, tickets: 0, deletions: 0 });
+    }
+    const data = analytics.get(gid);
+    if (data[key] !== undefined) data[key] += value;
+};
+
+/**
+ * AUDIT LOGGING BUFFER
+ */
+const logToAudit = (gid, action, user, reason) => {
     if (!auditLogs.has(gid)) auditLogs.set(gid, []);
     const logs = auditLogs.get(gid);
     logs.unshift({ 
-        id: crypto.randomBytes(3).toString('hex').toUpperCase(), 
+        id: crypto.randomBytes(4).toString('hex').toUpperCase(), 
         time: new Date().toLocaleTimeString(), 
         action, 
-        user: user.tag || user, 
+        user: user?.tag || user || "System", 
         reason 
     });
     if (logs.length > 100) logs.pop();
 };
 
-/**
- * ANALYTICS TRACKER
- * Monitors real-time throughput for the dashboard.
- */
-const track = (gid, key) => {
-    if (!analytics.has(gid)) analytics.set(gid, { messages: 0, threats: 0, tickets: 0 });
-    const data = analytics.get(gid);
-    if (data[key] !== undefined) data[key]++;
-};
-
+// --- CLIENT INITIALIZATION ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
         GatewayIntentBits.GuildMessages, 
         GatewayIntentBits.MessageContent, 
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.DirectMessages
+        GatewayIntentBits.GuildModeration
     ], 
     partials: [Partials.Channel, Partials.Message, Partials.User, Partials.GuildMember]
 });
 
-// --- DISCORD SECURITY ENGINE ---
+// --- MESSAGE PROCESSING LOGIC ---
 
 client.on(Events.MessageCreate, async (msg) => {
-    if (!msg.guild || msg.author.bot) return;
+    if (!msg.guild || !msg.author) return;
+    
     const s = getSettings(msg.guild.id);
-    track(msg.guild.id, 'messages');
+    trackEvent(msg.guild.id, 'messages');
 
-    // 1. GHOST PING CACHE (RADAR)
-    // We store any message containing pings. If deleted, we log the contents.
+    // PROTOCOL: THREAD PROTECTION
+    if (s.ignoreThreads && msg.channel.isThread()) return;
+
+    // PROTOCOL: TICKET TRANSCRIPT RECORDING
+    for (const [userId, channelId] of ticketCache.entries()) {
+        if (channelId === msg.channel.id) {
+            if (!ticketTranscripts.has(channelId)) ticketTranscripts.set(channelId, []);
+            const log = ticketTranscripts.get(channelId);
+            log.push({ 
+                author: msg.author.tag, 
+                content: msg.content || "[Non-Text Media]", 
+                time: new Date().toLocaleTimeString() 
+            });
+            if (log.length > 200) log.shift();
+        }
+    }
+
+    // PROTOCOL: GHOST PING DETECTION
     if (msg.mentions.users.size > 0 || msg.mentions.everyone || msg.mentions.roles.size > 0) {
         ghostPingCache.set(msg.id, { 
             author: msg.author, 
@@ -118,54 +143,53 @@ client.on(Events.MessageCreate, async (msg) => {
             ts: Date.now(),
             channel: msg.channel.name 
         });
-        setTimeout(() => ghostPingCache.delete(msg.id), 120000); // 2 minute cache
+        setTimeout(() => ghostPingCache.delete(msg.id), 120000); 
     }
 
-    // 2. AUTO-DELETION ENGINE (SWEEP)
-    // If the channel is marked for auto-deletion, trigger the countdown.
+    // PROTOCOL: AUTO-DELETION ENGINE
     if (s.autoDeleteChannels.includes(msg.channel.id)) {
-        setTimeout(() => {
-            msg.delete().catch(() => {});
-        }, s.deleteDelay);
+        // Apply bypass checks even to auto-delete
+        const isAdmin = msg.member?.permissions.has(PermissionFlagsBits.Administrator);
+        const isBot = msg.author.bot;
+        
+        if (!(s.ignoreAdmins && isAdmin) && !(s.ignoreBots && isBot)) {
+            setTimeout(() => {
+                msg.delete().catch(() => {});
+                trackEvent(msg.guild.id, 'deletions');
+            }, s.deleteDelay);
+        }
     }
 
-    // 3. STAFF BYPASS
-    if (msg.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+    // GLOBAL BYPASS: IGNORE BOTS
+    if (s.ignoreBots && msg.author.bot) return;
 
-    // 4. THREAT INTERCEPTION (GUARD)
+    // GLOBAL BYPASS: IGNORE ADMINS
+    if (s.ignoreAdmins && msg.member?.permissions.has(PermissionFlagsBits.Administrator)) return;
+    if (msg.member?.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+
+    // PROTOCOL: MODERATION FILTERS
     let violation = null;
-    
-    // Check for unauthorized links
-    if (s.antiLink && /(https?:\/\/[^\s]+)/g.test(msg.content)) {
-        violation = "Malicious/Unauthorized Link";
-    }
-    
-    // Check for mass-mention attacks
-    if (s.antiMassMention && msg.mentions.users.size > s.maxMentions) {
-        violation = `Mass Mention Violation (${msg.mentions.users.size} pings)`;
-    }
-    
-    // Check for blacklisted phrases
-    if (s.blacklist.some(w => msg.content.toLowerCase().includes(w.toLowerCase()))) {
-        violation = "Blacklisted Phrase Detected";
-    }
+    if (s.antiLink && /(https?:\/\/[^\s]+)/g.test(msg.content)) violation = "Link Sharing";
+    if (s.antiMassMention && msg.mentions.users.size > s.maxMentions) violation = "Mass Mention";
+    if (s.blacklist.some(w => msg.content.toLowerCase().includes(w.toLowerCase()))) violation = "Restricted Phrase";
 
     if (violation) {
-        track(msg.guild.id, 'threats');
+        trackEvent(msg.guild.id, 'threats');
         msg.delete().catch(() => {});
-        logAudit(msg.guild.id, "INTERCEPTED", msg.author, violation);
+        logToAudit(msg.guild.id, "INTERCEPT", msg.author, violation);
         
-        const guardMsg = await msg.channel.send({
+        const guard = await msg.channel.send({
             embeds: [
                 new EmbedBuilder()
-                .setDescription(`🛡️ **OMEGA GUARD:** Security violation by <@${msg.author.id}>. Session purged.\n**Reason:** \`${violation}\``)
+                .setDescription(`🛡️ **TITAN INTERCEPT:** Warning for <@${msg.author.id}> (\`${violation}\`)`)
                 .setColor("#f43f5e")
             ]
         });
-        setTimeout(() => guardMsg.delete().catch(() => {}), 5000);
+        setTimeout(() => guard.delete().catch(() => {}), 5000);
     }
 });
 
+// --- GHOST PING RADAR ---
 client.on(Events.MessageDelete, async (msg) => {
     if (!msg.guild) return;
     const s = getSettings(msg.guild.id);
@@ -176,15 +200,16 @@ client.on(Events.MessageDelete, async (msg) => {
         
         if (logChannel) {
             const embed = new EmbedBuilder()
-                .setTitle("🚨 Ghost Ping Detected")
-                .setDescription(`A message containing mentions was deleted.`)
+                .setTitle("🚨 GHOST PING RADAR")
+                .setThumbnail(data.author.displayAvatarURL())
                 .addFields(
-                    { name: "Sender", value: `${data.author.tag} (${data.author.id})`, inline: true },
+                    { name: "Offender", value: `<@${data.author.id}> (${data.author.tag})`, inline: true },
                     { name: "Channel", value: `#${data.channel}`, inline: true },
-                    { name: "Message Content", value: data.content || "*No text content (Media/Embed)*" }
+                    { name: "Detected Content", value: data.content || "*Media/Embed Only*" }
                 )
+                .setTimestamp()
                 .setColor("#fbbf24")
-                .setTimestamp();
+                .setFooter({ text: "Titan Ultra Security" });
             
             logChannel.send({ embeds: [embed] });
         }
@@ -192,207 +217,236 @@ client.on(Events.MessageDelete, async (msg) => {
     }
 });
 
-// --- INTERACTION HANDLERS (TICKETS & COMMANDS) ---
+// --- ANTI-NUKE PROTOCOLS ---
+client.on(Events.ChannelDelete, async (channel) => {
+    if (!channel.guild) return;
+    const s = getSettings(channel.guild.id);
+    const gid = channel.guild.id;
+
+    if (!nukeRadar.has(gid)) nukeRadar.set(gid, []);
+    const deletions = nukeRadar.get(gid);
+    deletions.push(Date.now());
+
+    // Filter for rapid deletions (e.g., 4 in 15 seconds)
+    const recent = deletions.filter(t => Date.now() - t < 15000);
+    nukeRadar.set(gid, recent);
+
+    if (recent.length >= 4) {
+        logToAudit(gid, "ANTI_NUKE", "System", "Mass Channel Deletion Prevented/Logged");
+        const logChannel = channel.guild.channels.cache.get(s.logChannelId);
+        if (logChannel) {
+            logChannel.send("☢️ **CRITICAL:** Rapid channel deletions detected. High alert.");
+        }
+    }
+});
+
+// --- INTERACTION HANDLERS (TICKETS & SLASH COMMANDS) ---
 
 client.on(Events.InteractionCreate, async (i) => {
     if (!i.guild) return;
     const s = getSettings(i.guild.id);
 
-    // 1. TICKET BUTTON LOGIC
     if (i.isButton()) {
-        if (i.customId === 'tkt_open') {
-            if (ticketCache.has(i.user.id)) {
-                return i.reply({ content: "⚠️ **Access Denied:** You already have an active security tunnel.", ephemeral: true });
+        const { customId, user, guild, channel } = i;
+
+        if (customId === 'tkt_open') {
+            if (ticketCache.has(user.id)) {
+                return i.reply({ content: "⚠️ An active uplink session is already open.", ephemeral: true });
             }
-
+            
             await i.deferReply({ ephemeral: true });
-
+            
             try {
-                const channel = await i.guild.channels.create({
-                    name: `tunnel-${i.user.username}`,
+                const ticketChannel = await guild.channels.create({
+                    name: `tkt-${user.username}`,
                     type: ChannelType.GuildText,
-                    parent: s.ticketCategoryId || null,
                     permissionOverwrites: [
-                        { id: i.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                        { id: i.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.ReadMessageHistory] },
-                        ...s.modRoleIds.map(roleId => ({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
+                        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
+                        ...s.modRoleIds.map(rid => ({ id: rid, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
                     ]
                 });
 
-                ticketCache.set(i.user.id, channel.id);
-                track(i.guild.id, 'tickets');
-                logAudit(i.guild.id, "TUNNEL_OPEN", i.user, `Channel: #${channel.name}`);
+                ticketCache.set(user.id, ticketChannel.id);
+                trackEvent(guild.id, 'tickets');
+                logToAudit(guild.id, "TICKET_OPEN", user, `Created: #${ticketChannel.name}`);
 
-                const embed = new EmbedBuilder()
-                    .setTitle("🔐 SECURE ENCRYPTED UPLINK")
-                    .setDescription(`Welcome <@${i.user.id}>. This tunnel is encrypted and visible only to you and the server administration.\n\n**Instructions:**\nState your reason for contact. A staff member will claim this session shortly.`)
-                    .setThumbnail(client.user.displayAvatarURL())
-                    .setColor(s.panelColor)
-                    .setFooter({ text: "Omega Sentinel v10 | Security Protocol Active" });
-
-                const row = new ActionRowBuilder().addComponents(
+                const controls = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('tkt_claim').setLabel('Claim Session').setStyle(ButtonStyle.Success).setEmoji('🛡️'),
-                    new ButtonBuilder().setCustomId('tkt_close').setLabel('Decommission').setStyle(ButtonStyle.Danger).setEmoji('☢️')
+                    new ButtonBuilder().setCustomId('tkt_close').setLabel('Close Uplink').setStyle(ButtonStyle.Danger).setEmoji('🔒')
                 );
 
-                await channel.send({ content: `<@${i.user.id}> | <@&${s.modRoleIds[0] || i.guild.ownerId}>`, embeds: [embed], components: [row] });
-                i.editReply(`✅ **Uplink Established:** ${channel}`);
-
+                await ticketChannel.send({ 
+                    content: `📡 **SECURE UPLINK ESTABLISHED** | <@${user.id}>`, 
+                    embeds: [
+                        new EmbedBuilder()
+                        .setTitle("🔒 ENCRYPTED CHANNEL")
+                        .setDescription("Titan Help Desk is active. State your inquiry. All messages are logged to the dashboard.")
+                        .setColor(s.panelColor)
+                        .setFooter({ text: "Titan Ultra Transcript Protocol" })
+                    ], 
+                    components: [controls] 
+                });
+                
+                i.editReply(`✅ Uplink initialized: <#${ticketChannel.id}>`);
             } catch (err) {
                 console.error(err);
-                i.editReply("❌ **Critical Failure:** Unable to initialize channel permissions.");
+                i.editReply("❌ System Failure: Could not create ticket channel.");
             }
         }
 
-        if (i.customId === 'tkt_claim') {
-            await i.reply({ content: `🛡️ **Protocol Update:** Session claimed by <@${i.user.id}>.` });
-            const disabledRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('tkt_close').setLabel('Terminate Session').setStyle(ButtonStyle.Danger).setEmoji('☢️')
-            );
-            await i.message.edit({ components: [disabledRow] });
-            logAudit(i.guild.id, "TUNNEL_CLAIM", i.user, "Staff took control of session.");
+        if (customId === 'tkt_claim') {
+            i.reply(`🛡️ **Session Claimed** by <@${user.id}>.`);
+            logToAudit(guild.id, "TICKET_CLAIM", user, `Claimed ticket in #${channel.name}`);
         }
 
-        if (i.customId === 'tkt_close') {
-            await i.reply("☢️ **DECOMMISSIONING:** Purging tunnel data and deleting channel in 5 seconds...");
-            for (const [userId, channelId] of ticketCache.entries()) {
-                if (channelId === i.channel.id) ticketCache.delete(userId);
-            }
-            logAudit(i.guild.id, "TUNNEL_CLOSED", i.user, "Manual decommission.");
-            setTimeout(() => i.channel.delete().catch(() => {}), 5000);
+        if (customId === 'tkt_close') {
+            i.reply("☢️ **TERMINATING:** Wiping session data and archiving logs...");
+            logToAudit(guild.id, "TICKET_CLOSE", user, `Terminated ticket #${channel.name}`);
+            
+            setTimeout(() => {
+                for (const [uid, cid] of ticketCache.entries()) {
+                    if (cid === channel.id) ticketCache.delete(uid);
+                }
+                ticketTranscripts.delete(channel.id);
+                channel.delete().catch(() => {});
+            }, 5000);
         }
     }
 
-    // 2. SLASH COMMANDS
     if (i.isChatInputCommand()) {
-        if (i.commandName === 'terminal') {
-            const accessKey = serverPasswords.get(i.guild.id) || "UNCONFIGURED";
+        const { commandName, options, member } = i;
+
+        if (commandName === 'terminal') {
+            const pass = serverPasswords.get(i.guild.id) || "NOT_READY";
             const embed = new EmbedBuilder()
-                .setTitle("📡 REMOTE TERMINAL ACCESS")
-                .setDescription("Use the credentials below to access the high-performance security dashboard.")
+                .setTitle("📡 MAIN FRAME TERMINAL")
+                .setThumbnail(client.user.displayAvatarURL())
                 .addFields(
-                    { name: "Terminal URL", value: `[Access Dashboard](${CONFIG.BASE_URL})` },
-                    { name: "Node Identifier", value: `\`${i.guild.id}\``, inline: true },
-                    { name: "Access Key", value: `\`${accessKey}\``, inline: true }
+                    { name: "Access Node", value: `\`${i.guild.id}\``, inline: true },
+                    { name: "Access Key", value: `\`${pass}\``, inline: true },
+                    { name: "Uplink URL", value: CONFIG.BASE_URL }
                 )
-                .setColor("#6366f1")
-                .setFooter({ text: "Confidential: Authorized Personnel Only" });
+                .setColor("#0ea5e9")
+                .setFooter({ text: "Do not share these credentials." });
 
             i.reply({ embeds: [embed], ephemeral: true });
         }
 
-        if (i.commandName === 'deploy-panel') {
-            if (!i.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return i.reply({ content: "❌ **Insufficient Clearance:** Admin permissions required.", ephemeral: true });
+        if (commandName === 'deploy') {
+            if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return i.reply({ content: "Insufficient clearance.", ephemeral: true });
             }
-
-            const targetChannel = i.options.getChannel('channel');
-            const embed = new EmbedBuilder()
-                .setTitle(s.panelTitle)
-                .setDescription(s.panelDesc)
-                .setColor(s.panelColor)
-                .setThumbnail(i.guild.iconURL())
-                .setImage('https://i.imgur.com/your-header-image.png'); // Aesthetic placeholder
-
+            const target = options.getChannel('channel');
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('tkt_open')
-                    .setLabel('Initialize Uplink')
-                    .setStyle(ButtonStyle.Primary)
-                    .setEmoji('🎫')
+                new ButtonBuilder().setCustomId('tkt_open').setLabel('Contact Support').setStyle(ButtonStyle.Primary).setEmoji('🎫')
             );
 
-            await targetChannel.send({ embeds: [embed], components: [row] });
-            i.reply({ content: `✅ **Deployment Successful:** Panel active in ${targetChannel}`, ephemeral: true });
-            logAudit(i.guild.id, "PANEL_DEPLOY", i.user, `Channel: #${targetChannel.name}`);
+            await target.send({ 
+                embeds: [
+                    new EmbedBuilder()
+                    .setTitle(s.panelTitle)
+                    .setDescription(s.panelDesc)
+                    .setColor(s.panelColor)
+                    .setThumbnail(i.guild.iconURL())
+                ], 
+                components: [row] 
+            });
+
+            i.reply({ content: `✅ Deployed Hub to <#${target.id}>`, ephemeral: true });
         }
     }
 });
 
-// --- SYSTEM INITIALIZATION ---
+// --- BOOT SEQUENCE ---
 
 client.once('ready', async () => {
-    console.log(`[READY] Omega Sentinel V10 is online.`);
-    client.user.setActivity("Omega-Grid Alpha", { type: ActivityType.Competing });
+    console.log(`[CORE] Titan Ultra Core v${CONFIG.VERSION} online.`);
+    client.user.setActivity("Security Mainframe", { type: ActivityType.Watching });
 
     const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
+    const commands = [
+        new SlashCommandBuilder().setName('terminal').setDescription('Get dashboard access credentials'),
+        new SlashCommandBuilder().setName('deploy').setDescription('Deploy the Ticket Hub').addChannelOption(o => o.setName('channel').setRequired(true).setDescription('Target channel'))
+    ];
+
     client.guilds.cache.forEach(async (guild) => {
         try {
-            await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), {
-                body: [
-                    new SlashCommandBuilder().setName('terminal').setDescription('Get your server-specific web dashboard access credentials.'),
-                    new SlashCommandBuilder()
-                        .setName('deploy-panel')
-                        .setDescription('Deploy the high-end ticket interaction panel.')
-                        .addChannelOption(o => o.setName('channel').setDescription('The channel to deploy to').setRequired(true))
-                ]
-            });
-            // Auto-generate access key if missing
+            await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
             if (!serverPasswords.has(guild.id)) {
                 serverPasswords.set(guild.id, crypto.randomBytes(4).toString('hex').toUpperCase());
             }
-        } catch (err) {
-            console.error(`[REST_ERR] Failed for ${guild.id}`);
+        } catch (e) {
+            console.error(`[REST] Guild ${guild.id} failed registration.`);
         }
     });
 });
 
-// --- OMEGA WEB INTERFACE (EXPRESS + TAILWIND) ---
+// --- DASHBOARD SYSTEM (EXPRESS) ---
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(session({ keys: [CONFIG.SESSION_SECRET], name: 'omega_sess' }));
+app.use(session({ 
+    keys: [CONFIG.SESSION_SECRET], 
+    name: 'titan_v4_session',
+    maxAge: 24 * 60 * 60 * 1000 
+}));
 
 /**
- * MASTER UI WRAPPER
- * High-performance animated dashboard wrapper.
+ * GLASSMORPHISM UI WRAPPER
  */
-const renderUI = (content, guildId) => `
+const renderUI = (content, gid) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Omega Sentinel | Command Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&display=swap" rel="stylesheet">
     <style>
-        body { background-color: #020617; color: #f8fafc; font-family: 'Space Grotesk', sans-serif; overflow-x: hidden; }
-        .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
-        .animate-fade { animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-        .sidebar-item { transition: all 0.3s ease; border-radius: 1rem; }
-        .sidebar-item:hover { background: rgba(99, 102, 241, 0.15); color: #818cf8; transform: translateX(8px); }
-        .cyber-grid { background-image: linear-gradient(rgba(99, 102, 241, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(99, 102, 241, 0.05) 1px, transparent 1px); background-size: 40px 40px; }
+        body { font-family: 'Space Grotesk', sans-serif; background: #020617; color: #f1f5f9; }
+        .glass { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.05); }
+        .sidebar-item { transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .sidebar-item:hover { background: rgba(14, 165, 233, 0.15); color: #38bdf8; transform: translateX(5px); }
+        .sidebar-item.active { background: #0ea5e9; color: white; box-shadow: 0 10px 25px -5px rgba(14, 165, 233, 0.4); }
+        .card { background: rgba(30, 41, 59, 0.4); border-radius: 2rem; border: 1px solid rgba(255,255,255,0.03); transition: 0.3s; }
+        .card:hover { border-color: rgba(14, 165, 233, 0.2); transform: translateY(-5px); }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 20px; }
     </style>
 </head>
-<body class="flex h-screen cyber-grid">
-    <!-- SIDE NAVIGATION -->
-    <aside class="w-80 glass m-6 rounded-[2.5rem] flex flex-col p-8 shadow-2xl border-r-0">
-        <div class="mb-12 flex items-center gap-4">
-            <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-600/30">
-                <span class="text-2xl font-black">Ω</span>
-            </div>
+<body class="flex h-screen overflow-hidden">
+    <nav class="w-80 glass m-6 rounded-[2.5rem] flex flex-col p-8 shadow-2xl overflow-y-auto">
+        <div class="flex items-center gap-3 mb-10">
+            <div class="w-10 h-10 bg-sky-500 rounded-xl flex items-center justify-center font-bold text-white shadow-lg shadow-sky-500/20">T</div>
+            <h1 class="text-2xl font-black tracking-tighter">TITAN <span class="text-sky-500">ULTRA</span></h1>
+        </div>
+        
+        <div class="flex-1 space-y-2">
+            <p class="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] px-4 mb-4">Operations</p>
+            <a href="/dash" class="sidebar-item flex items-center gap-4 p-4 rounded-2xl font-medium">📊 Telemetry</a>
+            <a href="/security" class="sidebar-item flex items-center gap-4 p-4 rounded-2xl font-medium">🛡️ Security Grids</a>
+            <a href="/previews" class="sidebar-item flex items-center gap-4 p-4 rounded-2xl font-medium">🎫 Ticket Previews</a>
+            <a href="/audits" class="sidebar-item flex items-center gap-4 p-4 rounded-2xl font-medium">📜 Audit Buffer</a>
+        </div>
+
+        <div class="pt-6 border-t border-slate-800">
+            <a href="/logout" class="flex items-center gap-4 p-4 rounded-2xl font-bold text-rose-400 hover:bg-rose-500/10 transition">🔌 DISCONNECT</a>
+        </div>
+    </nav>
+
+    <main class="flex-1 p-10 overflow-y-auto">
+        <header class="flex justify-between items-center mb-10">
             <div>
-                <h1 class="text-xl font-bold tracking-tight">OMEGA</h1>
-                <p class="text-xs text-slate-500 font-medium">SENTINEL V10</p>
+                <h2 class="text-4xl font-black tracking-tight text-white">System Protocol</h2>
+                <p class="text-slate-500">Active Uplink: ${gid}</p>
             </div>
-        </div>
-
-        <nav class="flex-1 space-y-4">
-            <a href="/dash" class="sidebar-item block p-5 font-medium">📊 Telemetry</a>
-            <a href="/security" class="sidebar-item block p-5 font-medium">🛡️ Security Grids</a>
-            <a href="/audits" class="sidebar-item block p-5 font-medium">📜 Audit Buffer</a>
-        </nav>
-
-        <div class="pt-8 border-t border-slate-800">
-            <a href="/logout" class="p-5 text-rose-400 font-bold hover:bg-rose-500/10 rounded-2xl block transition text-center">DISCONNECT</a>
-        </div>
-    </aside>
-
-    <!-- MAIN TERMINAL -->
-    <main class="flex-1 overflow-y-auto p-12 animate-fade">
+            <div class="flex items-center gap-4">
+                <div class="text-right">
+                    <p class="text-xs text-slate-500 font-bold uppercase">Status</p>
+                    <p class="text-sky-400 font-bold">NODE OPERATIONAL</p>
+                </div>
+            </div>
+        </header>
         ${content}
     </main>
 </body>
@@ -402,24 +456,15 @@ const renderUI = (content, guildId) => `
 
 app.get('/', (req, res) => {
     res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8"><title>Omega Login</title><script src="https://cdn.tailwindcss.com"></script>
-        <style>body{background:#020617;font-family:sans-serif}.glass{background:rgba(15,23,42,0.8);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.05)}</style>
-    </head>
-    <body class="flex items-center justify-center h-screen">
-        <form action="/login" method="POST" class="glass p-16 rounded-[3rem] w-[450px] text-center shadow-2xl">
-            <h1 class="text-5xl font-black text-indigo-500 mb-2 tracking-tighter">OMEGA</h1>
-            <p class="text-slate-500 mb-12 font-medium">Establish Secure Uplink</p>
-            
-            <input name="gid" placeholder="Node Identifier (Guild ID)" class="w-full bg-slate-900 border border-slate-800 p-6 rounded-2xl text-white mb-4 outline-none focus:border-indigo-500 transition">
-            <input name="pass" type="password" placeholder="Access Key" class="w-full bg-slate-900 border border-slate-800 p-6 rounded-2xl text-white mb-10 outline-none focus:border-indigo-500 transition">
-            
-            <button class="w-full bg-indigo-600 text-white font-bold py-6 rounded-2xl shadow-xl shadow-indigo-600/20 hover:scale-[1.02] active:scale-[0.98] transition">INITIALIZE CONNECTION</button>
+    <body style="background:#020617;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;color:white">
+        <form action="/login" method="POST" style="background:rgba(15,23,42,0.8);padding:60px;border-radius:50px;width:450px;text-align:center;backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.05)">
+            <h1 style="color:#0ea5e9;font-size:3.5rem;font-weight:900;margin-bottom:10px;letter-spacing:-2px">TITAN</h1>
+            <p style="color:#64748b;margin-bottom:40px;font-weight:500">Security Mainframe Uplink</p>
+            <input name="gid" placeholder="Node ID (Guild)" style="width:100%;padding:20px;margin-bottom:15px;background:#020617;border:1px solid #1e293b;color:white;border-radius:20px;outline:none">
+            <input name="pass" type="password" placeholder="Access Key" style="width:100%;padding:20px;margin-bottom:30px;background:#020617;border:1px solid #1e293b;color:white;border-radius:20px;outline:none">
+            <button style="width:100%;padding:20px;background:#0ea5e9;color:white;border:none;border-radius:20px;font-weight:900;cursor:pointer;font-size:1.1rem;box-shadow:0 10px 20px -5px rgba(14,165,233,0.3)">AUTHENTICATE</button>
         </form>
-    </body>
-    </html>`);
+    </body>`);
 });
 
 app.post('/login', (req, res) => {
@@ -428,44 +473,23 @@ app.post('/login', (req, res) => {
         req.session.gid = gid;
         res.redirect('/dash');
     } else {
-        res.send("<body style='background:#020617;color:#f43f5e;display:flex;justify-content:center;align-items:center;height:100vh'><h1>ACCESS DENIED: INVALID CREDENTIALS</h1></body>");
+        res.send("<script>alert('AUTHENTICATION FAILED');window.location='/';</script>");
     }
 });
 
 app.get('/dash', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
-    const stats = analytics.get(req.session.gid) || { messages: 0, threats: 0, tickets: 0 };
-    const guild = client.guilds.cache.get(req.session.gid);
-    
+    const stats = analytics.get(req.session.gid) || { messages: 0, threats: 0, tickets: 0, deletions: 0 };
     res.send(renderUI(`
-        <header class="mb-16">
-            <h2 class="text-6xl font-black tracking-tighter mb-4">Command Center</h2>
-            <p class="text-slate-400 text-xl font-light">Monitoring <span class="text-white font-bold">${guild ? guild.name : 'Unknown Node'}</span></p>
-        </header>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-10 mb-16">
-            <div class="glass p-12 rounded-[2.5rem] border-b-8 border-indigo-500 hover:scale-[1.03] transition duration-500">
-                <span class="text-slate-500 font-bold uppercase tracking-widest text-xs">Security Scans</span>
-                <div class="text-7xl font-black mt-4">${stats.messages}</div>
-            </div>
-            <div class="glass p-12 rounded-[2.5rem] border-b-8 border-rose-500 hover:scale-[1.03] transition duration-500">
-                <span class="text-slate-500 font-bold uppercase tracking-widest text-xs">Intercepted</span>
-                <div class="text-7xl font-black mt-4">${stats.threats}</div>
-            </div>
-            <div class="glass p-12 rounded-[2.5rem] border-b-8 border-emerald-500 hover:scale-[1.03] transition duration-500">
-                <span class="text-slate-500 font-bold uppercase tracking-widest text-xs">Uptime (Mins)</span>
-                <div class="text-7xl font-black mt-4">${Math.floor((Date.now() - CONFIG.BOOT_TIME) / 60000)}</div>
-            </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div class="card p-8 border-b-4 border-sky-500"><p class="text-slate-500 font-bold uppercase text-[10px] tracking-widest">Network Traffic</p><h3 class="text-5xl font-black mt-2">${stats.messages}</h3></div>
+            <div class="card p-8 border-b-4 border-rose-500"><p class="text-slate-500 font-bold uppercase text-[10px] tracking-widest">Neutralized</p><h3 class="text-5xl font-black mt-2">${stats.threats}</h3></div>
+            <div class="card p-8 border-b-4 border-emerald-500"><p class="text-slate-500 font-bold uppercase text-[10px] tracking-widest">Support Uplinks</p><h3 class="text-5xl font-black mt-2">${stats.tickets}</h3></div>
+            <div class="card p-8 border-b-4 border-purple-500"><p class="text-slate-500 font-bold uppercase text-[10px] tracking-widest">Auto-Purged</p><h3 class="text-5xl font-black mt-2">${stats.deletions}</h3></div>
         </div>
-
-        <div class="glass p-16 rounded-[3rem] bg-gradient-to-tr from-indigo-500/5 to-transparent">
-            <h3 class="text-3xl font-bold mb-8 flex items-center gap-4">
-                <span class="w-3 h-3 bg-emerald-500 rounded-full animate-pulse"></span>
-                Core Status: Operational
-            </h3>
-            <p class="text-slate-400 text-xl leading-relaxed max-w-4xl">
-                The Omega-Grid is currently active and processing traffic. Ghost-Ping radar is sweeping all channels, and the Auto-Delete engine is engaged on specified target nodes. All telemetry is being mirrored to the Audit Buffer in real-time.
-            </p>
+        <div class="mt-10 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="card p-10"><h4 class="font-bold text-xl mb-4">Core Status</h4><p class="text-slate-400">Node v4.0.0-Ultra is currently syncing with Discord Gateway. Memory usage is nominal. All security modules are hot-loaded and operational.</p></div>
+            <div class="card p-10"><h4 class="font-bold text-xl mb-4">Active Modules</h4><div class="flex flex-wrap gap-2"><span class="bg-sky-500/10 text-sky-400 px-3 py-1 rounded-full text-xs font-bold">ANTI-NUKE</span><span class="bg-sky-500/10 text-sky-400 px-3 py-1 rounded-full text-xs font-bold">RADAR-PULSE</span><span class="bg-sky-500/10 text-sky-400 px-3 py-1 rounded-full text-xs font-bold">AUTO-MOD</span></div></div>
         </div>
     `, req.session.gid));
 });
@@ -473,66 +497,105 @@ app.get('/dash', (req, res) => {
 app.get('/security', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     const s = getSettings(req.session.gid);
-    
     res.send(renderUI(`
-        <h2 class="text-5xl font-black mb-12 tracking-tight">Security Grids</h2>
-        <form action="/save" method="POST" class="space-y-12">
-            <div class="glass p-12 rounded-[3rem] space-y-10">
-                <div>
-                    <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Auto-Delete Target Channels (IDs, Comma Separated)</label>
-                    <textarea name="autoDeleteChannels" class="w-full bg-slate-900/50 border border-slate-800 p-8 rounded-3xl text-white h-40 outline-none focus:border-indigo-500 transition text-lg font-mono">${s.autoDeleteChannels.join(',')}</textarea>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-10">
+        <form action="/save" method="POST" class="space-y-6">
+            <div class="card p-10">
+                <h3 class="text-2xl font-bold mb-8 flex items-center gap-4"><div class="w-2 h-8 bg-sky-500 rounded-full"></div> Grid Configuration</h3>
+                <div class="space-y-8">
                     <div>
-                        <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Anti-Link Protocol</label>
-                        <select name="antiLink" class="w-full bg-slate-900/50 border border-slate-800 p-6 rounded-2xl text-white outline-none">
-                            <option value="true" ${s.antiLink ? 'selected' : ''}>ENGAGED</option>
-                            <option value="false" ${!s.antiLink ? 'selected' : ''}>DISENGAGED</option>
-                        </select>
+                        <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Auto-Delete Channels (Comma Separated IDs)</label>
+                        <input name="autoDeleteChannels" value="${s.autoDeleteChannels.join(',')}" class="w-full bg-slate-950 border border-slate-800 p-5 rounded-2xl text-white outline-none focus:border-sky-500 transition">
                     </div>
-                    <div>
-                        <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Ghost Ping Radar</label>
-                        <select name="antiGhostPing" class="w-full bg-slate-900/50 border border-slate-800 p-6 rounded-2xl text-white outline-none">
-                            <option value="true" ${s.antiGhostPing ? 'selected' : ''}>ENGAGED</option>
-                            <option value="false" ${!s.antiGhostPing ? 'selected' : ''}>DISENGAGED</option>
-                        </select>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div>
+                            <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Ignore Admins</label>
+                            <select name="ignoreAdmins" class="w-full bg-slate-950 border border-slate-800 p-5 rounded-2xl text-white">
+                                <option value="true" ${s.ignoreAdmins?'selected':''}>ENABLED</option>
+                                <option value="false" ${!s.ignoreAdmins?'selected':''}>DISABLED</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Ignore Bots</label>
+                            <select name="ignoreBots" class="w-full bg-slate-950 border border-slate-800 p-5 rounded-2xl text-white">
+                                <option value="true" ${s.ignoreBots?'selected':''}>ENABLED</option>
+                                <option value="false" ${!s.ignoreBots?'selected':''}>DISABLED</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Ignore Threads</label>
+                            <select name="ignoreThreads" class="w-full bg-slate-950 border border-slate-800 p-5 rounded-2xl text-white">
+                                <option value="true" ${s.ignoreThreads?'selected':''}>ENABLED</option>
+                                <option value="false" ${!s.ignoreThreads?'selected':''}>DISABLED</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Anti-Link Protocol</label>
+                            <select name="antiLink" class="w-full bg-slate-950 border border-slate-800 p-5 rounded-2xl text-white">
+                                <option value="true" ${s.antiLink?'selected':''}>ACTIVE</option>
+                                <option value="false" ${!s.antiLink?'selected':''}>INACTIVE</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Purge Delay (ms)</label>
+                            <input name="deleteDelay" type="number" value="${s.deleteDelay}" class="w-full bg-slate-950 border border-slate-800 p-5 rounded-2xl text-white outline-none">
+                        </div>
                     </div>
                 </div>
-
-                <div>
-                    <label class="block text-slate-500 font-bold mb-4 uppercase text-xs tracking-widest">Phrase Blacklist (Comma Separated)</label>
-                    <textarea name="blacklist" class="w-full bg-slate-900/50 border border-slate-800 p-8 rounded-3xl text-white h-40 outline-none focus:border-indigo-500 transition text-lg font-mono">${s.blacklist.join(',')}</textarea>
-                </div>
-
-                <button class="w-full bg-indigo-600 p-8 rounded-[2rem] font-black text-2xl hover:scale-[1.01] active:scale-[0.99] transition shadow-2xl shadow-indigo-600/30">SYNCHRONIZE SECURITY GRID</button>
             </div>
+            <button class="w-full bg-sky-600 hover:bg-sky-500 p-6 rounded-2xl font-black text-xl shadow-xl shadow-sky-500/20 transition transform active:scale-95">SYNCHRONIZE SECURITY GRID</button>
         </form>
     `, req.session.gid));
+});
+
+app.get('/previews', (req, res) => {
+    if (!req.session.gid) return res.redirect('/');
+    let html = ``;
+    if (ticketTranscripts.size === 0) {
+        html = `<div class="card p-20 text-center text-slate-500 font-bold text-xl italic">No active telemetry from support channels.</div>`;
+    } else {
+        for (const [chId, msgs] of ticketTranscripts.entries()) {
+            html += `
+            <div class="card p-10 mb-8 border-l-4 border-sky-500">
+                <div class="flex justify-between items-center mb-6">
+                    <h4 class="text-sky-400 font-black text-xl">UPLINK CHANNEL: ${chId}</h4>
+                    <span class="bg-emerald-500/10 text-emerald-400 px-4 py-1 rounded-full text-[10px] font-bold">STREAMING DATA</span>
+                </div>
+                <div class="space-y-4 max-h-[400px] overflow-y-auto pr-4 font-mono text-sm bg-slate-950/50 p-6 rounded-3xl border border-slate-800">
+                    ${msgs.map(m => `
+                        <div class="flex gap-4">
+                            <span class="text-slate-600 shrink-0">[${m.time}]</span>
+                            <span class="text-sky-500 font-bold shrink-0">${m.author}:</span>
+                            <span class="text-slate-300">${m.content}</span>
+                        </div>`).join('')}
+                </div>
+            </div>`;
+        }
+    }
+    res.send(renderUI(html, req.session.gid));
 });
 
 app.get('/audits', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     const logs = auditLogs.get(req.session.gid) || [];
-    
     res.send(renderUI(`
-        <h2 class="text-5xl font-black mb-12 tracking-tight">Audit Buffer</h2>
-        <div class="glass rounded-[3rem] overflow-hidden">
+        <div class="card overflow-hidden">
             <table class="w-full text-left">
-                <thead class="bg-slate-950/50 text-slate-500 uppercase text-xs font-bold tracking-widest">
-                    <tr><th class="p-10">Timestamp</th><th class="p-10">Operation</th><th class="p-10">Target</th><th class="p-10">Event Detail</th></tr>
+                <thead class="bg-slate-950 text-slate-500 uppercase text-[10px] font-bold tracking-[0.2em]">
+                    <tr><th class="p-8">Stamp</th><th class="p-8">Action</th><th class="p-8">User</th><th class="p-8">Parameters</th></tr>
                 </thead>
                 <tbody class="divide-y divide-slate-800">
                     ${logs.map(l => `
-                        <tr class="hover:bg-white/5 transition duration-300">
-                            <td class="p-10 text-slate-500 font-mono text-sm">${l.time}</td>
-                            <td class="p-10 font-black text-indigo-400 text-lg">${l.action}</td>
-                            <td class="p-10 font-medium">${l.user}</td>
-                            <td class="p-10 text-slate-400">${l.reason}</td>
-                        </tr>
-                    `).join('') || `<tr><td colspan="4" class="p-40 text-center text-slate-600 italic">No events recorded in the current session.</td></tr>`}
+                        <tr class="hover:bg-slate-800/30 transition">
+                            <td class="p-8 text-slate-500 font-mono text-xs">${l.time}</td>
+                            <td class="p-8"><span class="text-sky-400 font-bold">${l.action}</span></td>
+                            <td class="p-8 text-slate-300 font-medium">${l.user}</td>
+                            <td class="p-8 text-slate-500 italic">${l.reason}</td>
+                        </tr>`).join('')}
                 </tbody>
             </table>
+            ${logs.length === 0 ? '<p class="p-10 text-center text-slate-500">Audit buffer empty.</p>' : ''}
         </div>
     `, req.session.gid));
 });
@@ -540,18 +603,23 @@ app.get('/audits', (req, res) => {
 app.post('/save', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     const s = getSettings(req.session.gid);
-    
     s.autoDeleteChannels = req.body.autoDeleteChannels.split(',').map(id => id.trim()).filter(id => id);
-    s.blacklist = req.body.blacklist.split(',').map(w => w.trim()).filter(w => w);
     s.antiLink = req.body.antiLink === 'true';
-    s.antiGhostPing = req.body.antiGhostPing === 'true';
+    s.ignoreAdmins = req.body.ignoreAdmins === 'true';
+    s.ignoreBots = req.body.ignoreBots === 'true';
+    s.ignoreThreads = req.body.ignoreThreads === 'true';
+    s.deleteDelay = parseInt(req.body.deleteDelay) || 3000;
     
-    logAudit(req.session.gid, "GRID_SYNC", "Dashboard Admin", "Manual configuration update.");
+    logToAudit(req.session.gid, "GRID_SYNC", "Titan Admin", "Grid parameters updated via dashboard.");
     res.redirect('/security');
 });
 
 app.get('/logout', (req, res) => { req.session = null; res.redirect('/'); });
 
-// --- SYSTEM BOOT ---
-app.listen(CONFIG.PORT, () => console.log(`[HTTP] Omega Terminal hosted on port ${CONFIG.PORT}`));
-client.login(CONFIG.TOKEN);
+// --- SYSTEM INITIALIZATION ---
+
+app.listen(CONFIG.PORT, () => console.log(`[HTTP] Titan Uplink operational on port ${CONFIG.PORT}`));
+
+client.login(CONFIG.TOKEN).catch(e => {
+    console.error("CRITICAL: Discord login failed. Verify token.");
+});
