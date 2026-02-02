@@ -111,14 +111,12 @@ client.on('messageCreate', async (msg) => {
     const s = getGuildSettings(msg.guild.id);
     const isMod = msg.member?.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && msg.member?.roles.cache.has(s.modRoleId));
 
-    // Support both !getpass and /getpass
     if (msg.content === '!getpass' || msg.content === '/getpass') {
         if (!msg.member.permissions.has(PermissionFlagsBits.Administrator)) return;
         const pass = serverPasswords.get(msg.guild.id);
-        return msg.reply(pass ? `Dashboard Password: \`${pass}\`` : "No password found in environment variables.");
+        return msg.reply(pass ? `Dashboard Password: \`${pass}\`` : "No password found in environment.");
     }
 
-    // IGNORE BOT & THREAD FILTERS
     if (s.ignoreBots && msg.author.bot) return;
     if (s.ignoreThreads && msg.channel.isThread()) return;
     if (isMod) return;
@@ -146,10 +144,7 @@ client.on('interactionCreate', async (interaction) => {
         
         if (interaction.commandName === 'getpass') {
             const pass = serverPasswords.get(interaction.guildId);
-            return interaction.reply({ 
-                content: pass ? `Password: \`${pass}\`` : "Not found.", 
-                flags: MessageFlags.Ephemeral 
-            });
+            return interaction.reply({ content: pass ? `Password: \`${pass}\`` : "Not found.", flags: MessageFlags.Ephemeral });
         }
 
         if (interaction.commandName === 'ban') {
@@ -216,8 +211,13 @@ const UI = (content, activeTab = 'main', guildId) => {
     .section { background: #1a2233; padding: 20px; border-radius: 10px; margin-bottom: 20px; border-left: 4px solid var(--accent); }
     input, select, textarea { width: 100%; padding: 12px; margin: 10px 0; background: #0f172a; color: white; border: 1px solid #334155; border-radius: 8px; box-sizing: border-box; }
     .btn { background: var(--accent); color: white; border: none; padding: 15px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; }
-    .preview { background: #2b2d31; border-radius: 8px; padding: 15px; border-left: 4px solid ${s.panelColor}; margin: 15px 0; }
-    #save-bar { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: var(--card); border: 2px solid var(--accent); padding: 15px 30px; border-radius: 50px; display: none; align-items: center; gap: 20px; z-index: 99; }
+    /* PREVIEW UI */
+    .discord-view { background: #313338; padding: 15px; border-radius: 8px; margin-top: 15px; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    .bot-name { color: #f2f3f5; font-weight: bold; font-size: 14px; margin-bottom: 5px; }
+    .bot-tag { background: #5865f2; font-size: 10px; padding: 1px 4px; border-radius: 3px; vertical-align: middle; margin-left: 5px; }
+    .preview-embed { border-left: 4px solid ${s.panelColor}; background: #2b2d31; padding: 12px; border-radius: 4px; margin-top: 5px; }
+    .preview-btn { background: #4e5058; color: white; padding: 6px 12px; border-radius: 3px; font-size: 14px; margin-top: 10px; display: inline-block; }
+    #save-bar { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: var(--card); border: 2px solid var(--accent); padding: 15px 30px; border-radius: 50px; display: none; align-items: center; gap: 20px; z-index: 99; box-shadow: 0 0 40px black; }
 </style></head>
 <body>
     <div class="card">
@@ -228,17 +228,17 @@ const UI = (content, activeTab = 'main', guildId) => {
         </div>
         ${content}
     </div>
-    <div id="save-bar"><span>Unsaved Changes!</span> <button onclick="document.forms[0].submit()" style="background:#10b981; border:none; color:white; padding:8px 20px; border-radius:20px; cursor:pointer;">Save</button></div>
+    <div id="save-bar"><span>⚠️ Unsaved Changes!</span> <button onclick="document.forms[0].submit()" style="background:#10b981; border:none; color:white; padding:8px 20px; border-radius:20px; cursor:pointer; font-weight:bold;">Save Now</button></div>
     <script>document.querySelectorAll('input, select, textarea').forEach(el => el.oninput = () => document.getElementById('save-bar').style.display='flex');</script>
 </body></html>`;
 };
 
-app.get('/', (req, res) => res.send('<body style="background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; color:white;"><form action="/login" method="POST" style="background:#1e293b; padding:40px; border-radius:15px; width:300px;"><h2>SHER LOCK</h2><input name="gid" placeholder="Server ID" style="width:100%; padding:10px; margin:10px 0;"><input name="pass" type="password" placeholder="Password" style="width:100%; padding:10px; margin:10px 0;"><button style="width:100%; padding:10px; background:#3b82f6; color:white; border:none; cursor:pointer;">LOGIN</button></form></body>'));
+app.get('/', (req, res) => res.send('<body style="background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; color:white;"><form action="/login" method="POST" style="background:#1e293b; padding:40px; border-radius:15px; width:300px;"><h2>SHER LOCK</h2><input name="gid" placeholder="Server ID" required style="width:100%; padding:10px; margin:10px 0;"><input name="pass" type="password" placeholder="Password" required style="width:100%; padding:10px; margin:10px 0;"><button style="width:100%; padding:10px; background:#3b82f6; color:white; border:none; cursor:pointer; font-weight:bold;">ENTER DASHBOARD</button></form></body>'));
 app.post('/login', (req, res) => { if(serverPasswords.get(req.body.gid) === req.body.pass) { req.session.gid = req.body.gid; res.redirect('/dashboard'); } else res.send("Denied"); });
 
 app.get('/dashboard', (req, res) => {
     const s = getGuildSettings(req.session.gid);
-    res.send(UI(`<form action="/save-main" method="POST"><div class="section"><h3>Identity</h3><label>Log Channel ID</label><input name="logs" value="${s.logChannelId}"><label>Mod Role ID</label><input name="mod" value="${s.modRoleId}"></div><button class="btn">Save Changes</button></form>`, 'main', req.session.gid));
+    res.send(UI(`<form action="/save-main" method="POST"><div class="section"><h3>Identity & Logs</h3><label>Log Channel ID</label><input name="logs" value="${s.logChannelId}"><label>Mod Role ID (Optional)</label><input name="mod" value="${s.modRoleId}"></div><button class="btn">Save Main Settings</button></form>`, 'main', req.session.gid));
 });
 
 app.get('/moderation', (req, res) => {
@@ -249,16 +249,19 @@ app.get('/moderation', (req, res) => {
     res.send(UI(`
         <form action="/save-mod" method="POST">
             <div class="section">
-                <h3>Ignore Settings</h3>
-                <label><input type="checkbox" name="ignoreBots" ${s.ignoreBots?'checked':''} style="width:auto"> Ignore Bots</label><br>
-                <label><input type="checkbox" name="ignoreThreads" ${s.ignoreThreads?'checked':''} style="width:auto"> Ignore Threads</label>
+                <h3>Ignore Filters</h3>
+                <label><input type="checkbox" name="ignoreBots" ${s.ignoreBots?'checked':''} style="width:auto"> Ignore Other Bots</label><br>
+                <label><input type="checkbox" name="ignoreThreads" ${s.ignoreThreads?'checked':''} style="width:auto"> Ignore Thread Channels</label>
             </div>
             <div class="section">
-                <h3>Auto-Delete</h3>
-                <select name="autoDel[]" multiple style="height:120px">${channels.map(c => `<option value="${c.id}" ${s.autoDeleteChannels.includes(c.id)?'selected':''}>#${c.name}</option>`).join('')}</select>
-                <label>Delay (ms)</label><input type="number" name="delay" value="${s.deleteDelay}">
+                <h3>Multi-Channel Auto-Delete</h3>
+                <p style="color:var(--muted); font-size:12px;">Select channels to clean (Hold Ctrl to pick multiple)</p>
+                <select name="autoDel[]" multiple style="height:150px">
+                    ${channels.map(c => `<option value="${c.id}" ${s.autoDeleteChannels.includes(c.id)?'selected':''}>#${c.name}</option>`).join('')}
+                </select>
+                <label>Deletion Delay (ms)</label><input type="number" name="delay" value="${s.deleteDelay}">
             </div>
-            <button class="btn">Update</button>
+            <button class="btn">Update Filter Settings</button>
         </form>
     `, 'mod', gid));
 });
@@ -271,20 +274,26 @@ app.get('/tickets', (req, res) => {
     res.send(UI(`
         <form action="/save-tickets" method="POST">
             <div class="section">
-                <h3>Live Preview</h3>
-                <div class="preview">
-                    <div style="font-weight:bold; font-size:18px;">${s.panelTitle}</div>
-                    <div style="color:#dbdee1; font-size:14px; margin-top:5px;">${s.panelDesc}</div>
+                <h3>Visual Preview</h3>
+                <div class="discord-view">
+                    <div class="bot-name">SHER LOCK <span class="bot-tag">APP</span></div>
+                    <div class="preview-embed">
+                        <div style="font-weight:bold; color:white;">${s.panelTitle}</div>
+                        <div style="color:#dbdee1; font-size:14px; margin-top:4px;">${s.panelDesc}</div>
+                    </div>
+                    <div class="preview-btn">🎫 Open Ticket</div>
                 </div>
-                <label>Title</label><input name="title" value="${s.panelTitle}">
-                <label>Description</label><textarea name="desc">${s.panelDesc}</textarea>
+                <br>
+                <label>Panel Title</label><input name="title" value="${s.panelTitle}">
+                <label>Panel Description</label><textarea name="desc" rows="3">${s.panelDesc}</textarea>
             </div>
             <div class="section">
-                <h3>Deployment</h3>
-                <label>Category ID</label><input name="cat" value="${s.ticketCategoryId}">
-                <label>Channel</label><select name="chan">${channels.map(c => `<option value="${c.id}" ${s.targetPanelChannel===c.id?'selected':''}>#${c.name}</option>`).join('')}</select>
+                <h3>Deployment Config</h3>
+                <label>Category ID (For Ticket Creation)</label><input name="cat" value="${s.ticketCategoryId}">
+                <label>Target Channel (Post Panel Here)</label>
+                <select name="chan">${channels.map(c => `<option value="${c.id}" ${s.targetPanelChannel===c.id?'selected':''}>#${c.name}</option>`).join('')}</select>
             </div>
-            <button class="btn">Deploy Panel</button>
+            <button class="btn" style="background:#10b981;">Save & Deploy Panel</button>
         </form>
     `, 'tickets', gid));
 });
