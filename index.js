@@ -1,14 +1,11 @@
 /**
- * SHER BOT - TITAN ULTRA (V4.5 INDUSTRIAL)
+ * SHER BOT - TITAN ULTRA (V4.6 INDUSTRIAL)
  * --------------------------------------------
  * RE-BRAND: Sher Bot (Core Engine)
- * FEATURE: Advanced Ticket System (Claim/Close/Transcript)
- * FEATURE: Ignore Specific Admin Roles
- * FEATURE: Anti-Nuke System (Channel/Role/Member Protection)
- * FEATURE: Access Key Management (Change from Web)
+ * FEATURE: Advanced Ticket System, Anti-Nuke, Key Management
  * UI: Dynamic Server Branding (Icon/Name)
- * UI: Switcher (Buttons vs Dropdowns)
- * UI: Modal Lock System (Buzz Save/Dismiss)
+ * UI: Dedicated "Access Denied" Error Terminal
+ * UI: High-Security Authentication Flow
  */
 
 require('dotenv').config();
@@ -32,20 +29,18 @@ const CONFIG = {
     SESSION_SECRET: process.env.SESSION_SECRET || 'sher-bot-v4-ultra',
     BASE_URL: process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 10000}`,
     BOOT_TIME: Date.now(),
-    VERSION: "TITAN ULTRA V4.5"
+    VERSION: "TITAN ULTRA V4.6"
 };
 
 const db = new Map();
 const serverPasswords = new Map();
 const auditLogs = new Map(); 
 const analytics = new Map();
-const ghostPingCache = new Collection();
 const ticketCache = new Map();
 const ticketTranscripts = new Map();
+const antiNukeTracker = new Map();
 
-// --- ANTI-NUKE CACHE ---
-const antiNukeTracker = new Map(); // tracks [guildId-userId-actionType] count
-
+// --- SETTINGS HELPER ---
 const getSettings = (gid) => {
     if (!db.has(gid)) {
         db.set(gid, {
@@ -55,8 +50,8 @@ const getSettings = (gid) => {
             antiLink: true,
             antiGhostPing: true,
             antiMassMention: true,
-            antiNuke: true, // NEW
-            nukeThreshold: 3, // Actions per 10s
+            antiNuke: true, 
+            nukeThreshold: 3,
             maxMentions: 5,
             ignoreAdmins: true, 
             ignoreBots: true,   
@@ -128,16 +123,10 @@ const checkNuke = async (guild, userId, actionType) => {
     return false;
 };
 
-// --- BOT EVENTS ---
-
+// --- BOT LOGIC ---
 client.on(Events.ChannelDelete, async (channel) => {
     const audit = await channel.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.ChannelDelete }).then(a => a.entries.first());
     if (audit && audit.executorId !== client.user.id) checkNuke(channel.guild, audit.executorId, "Channel Delete");
-});
-
-client.on(Events.GuildMemberRemove, async (member) => {
-    const audit = await member.guild.fetchAuditLogs({ limit: 1, type: AuditLogEvent.MemberKick }).then(a => a.entries.first());
-    if (audit && audit.executorId !== client.user.id && audit.targetId === member.id) checkNuke(member.guild, audit.executorId, "Member Kick");
 });
 
 client.on(Events.MessageCreate, async (msg) => {
@@ -155,7 +144,6 @@ client.on(Events.MessageCreate, async (msg) => {
     }
 
     if (s.ignoreThreads && msg.channel.isThread()) return;
-
     const hasBypassRole = msg.member?.roles.cache.some(r => s.adminRoleIds.includes(r.id));
     const isAdmin = msg.member?.permissions.has(PermissionFlagsBits.Administrator);
     
@@ -255,7 +243,7 @@ client.once('ready', async () => {
     });
 });
 
-// --- DASHBOARD ---
+// --- DASHBOARD SYSTEM ---
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -307,7 +295,6 @@ const renderUI = (content, gid, activePage) => {
 
     <main class="flex-1 p-10 overflow-y-auto">
         ${content}
-        
         <div id="saveBar" class="fixed bottom-10 left-1/2 -translate-x-1/2 glass p-6 rounded-3xl flex items-center gap-10 shadow-2xl transition-all translate-y-60 z-50">
             <div class="flex flex-col">
                 <p class="font-black text-rose-500">SYSTEM LOCK ACTIVE</p>
@@ -343,29 +330,62 @@ const renderUI = (content, gid, activePage) => {
 </html>`;
 };
 
+// --- AUTH PAGES ---
+
 app.get('/', (req, res) => {
     res.send(`
-    <body style="background:#020617;display:flex;justify-content:center;align-items:center;height:100vh;color:white;font-family:sans-serif">
-        <form action="/login" method="POST" style="background:rgba(15,23,42,0.8);padding:60px;border-radius:50px;width:450px;text-align:center;border:1px solid rgba(255,255,255,0.05);box-shadow: 0 50px 100px -20px rgba(0,0,0,0.5)">
-            <h1 style="color:#0ea5e9;font-size:4rem;font-weight:900;letter-spacing:-4px">SHER</h1>
-            <p style="color:#64748b;margin-bottom:40px;text-transform:uppercase;letter-spacing:4px;font-size:0.7rem">Security Mainframe</p>
-            <input name="gid" placeholder="Node ID" style="width:100%;padding:20px;margin-bottom:12px;background:#020617;border:1px solid #1e293b;color:white;border-radius:20px;outline:none focus:border-sky-500">
-            <input name="pass" type="password" placeholder="Access Key" style="width:100%;padding:20px;margin-bottom:30px;background:#020617;border:1px solid #1e293b;color:white;border-radius:20px;outline:none focus:border-sky-500">
-            <button style="width:100%;padding:20px;background:#0ea5e9;color:white;border:none;border-radius:20px;font-weight:900;cursor:pointer;font-size:1.2rem;box-shadow:0 10px 30px -5px rgba(14,165,233,0.4)">UPLINK</button>
+    <style>body { background:#020617; font-family: 'Space Grotesk', sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; overflow:hidden; } .card { background:rgba(15,23,42,0.8); padding:60px; border-radius:50px; width:450px; text-align:center; border:1px solid rgba(255,255,255,0.05); } h1 { color:#0ea5e9; font-size:4rem; font-weight:900; letter-spacing:-4px; margin:0; } p { color:#64748b; margin-bottom:40px; text-transform:uppercase; letter-spacing:4px; font-size:0.7rem; } input { width:100%; padding:20px; margin-bottom:12px; background:#020617; border:1px solid #1e293b; color:white; border-radius:20px; outline:none; box-sizing: border-box; } input:focus { border-color:#0ea5e9; } button { width:100%; padding:20px; background:#0ea5e9; color:white; border:none; border-radius:20px; font-weight:900; cursor:pointer; font-size:1.2rem; box-shadow:0 10px 30px -5px rgba(14,165,233,0.4); }</style>
+    <body>
+        <form action="/login" method="POST" class="card">
+            <h1>SHER</h1>
+            <p>Security Mainframe</p>
+            <input name="gid" placeholder="Node ID" required>
+            <input name="pass" type="password" placeholder="Access Key" required>
+            <button>UPLINK</button>
         </form>
+    </body>`);
+});
+
+app.get('/access-denied', (req, res) => {
+    res.send(`
+    <style>
+        body { background:#020617; font-family: 'Space Grotesk', sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; color:#f43f5e; }
+        .terminal { background:#0a0a0a; border:2px solid #f43f5e; border-radius:40px; padding:60px; width:600px; text-align:center; position:relative; overflow:hidden; box-shadow: 0 0 100px rgba(244,63,94,0.1); }
+        .scanline { position:absolute; top:0; left:0; width:100%; height:5px; background:rgba(244,63,94,0.5); animation: scan 3s linear infinite; }
+        @keyframes scan { from { top:0 } to { top:100% } }
+        h1 { font-size:5rem; font-weight:900; margin:0; letter-spacing:-2px; line-height:1; }
+        .code { font-family: monospace; font-size:0.8rem; background:rgba(244,63,94,0.1); padding:20px; border-radius:15px; margin:30px 0; text-align:left; color:#fca5a5; }
+        a { background:#f43f5e; color:white; text-decoration:none; padding:20px 40px; border-radius:20px; font-weight:900; text-transform:uppercase; letter-spacing:2px; display:inline-block; transition:0.3s; }
+        a:hover { background:white; color:#f43f5e; }
+    </style>
+    <body>
+        <div class="terminal">
+            <div class="scanline"></div>
+            <h1>VOID</h1>
+            <p style="font-weight:bold; letter-spacing:5px; margin-top:10px">ACCESS REVOKED</p>
+            <div class="code">
+                > CRITICAL FAILURE: AUTH_INVALID<br>
+                > SOURCE: UNRECOGNIZED_UPLINK<br>
+                > ACTION: TERMINATING SESSION...<br>
+                > STATUS: [ID/KEY MISMATCH]
+            </div>
+            <a href="/">Retry Uplink</a>
+        </div>
     </body>`);
 });
 
 app.post('/login', (req, res) => {
     const { gid, pass } = req.body;
     const correct = serverPasswords.get(gid) || CONFIG.MASTER_KEY;
-    if (pass === correct) {
+    if (gid && pass === correct) {
         req.session.gid = gid;
         res.redirect('/dash');
     } else {
-        res.send("<script>alert('ERROR: Access Denied');window.location='/';</script>");
+        res.redirect('/access-denied');
     }
 });
+
+// --- CONTENT ROUTES ---
 
 app.get('/dash', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
@@ -409,26 +429,18 @@ app.get('/security', (req, res) => {
                 <div class="grid grid-cols-2 gap-8">
                     <div class="space-y-4">
                         <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
-                            <div><p class="font-bold text-sm">Anti-Nuke Protocols</p><p class="text-[10px] text-slate-500">Auto-kick mass deletions</p></div>
+                            <div><p class="font-bold text-sm">Anti-Nuke Protocols</p><p class="text-[10px] text-slate-500">Kick on mass deletions</p></div>
                             ${renderControl('antiNuke', s.antiNuke, [{val:true, label:'ENGAGED'}, {val:false, label:'OFF'}])}
                         </div>
                         <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
                             <div><p class="font-bold text-sm">Ignore Admin Perms</p></div>
                             ${renderControl('ignoreAdmins', s.ignoreAdmins, [{val:true, label:'YES'}, {val:false, label:'NO'}])}
                         </div>
+                    </div>
+                    <div class="space-y-4">
                         <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900 text-amber-500">
                             <div><p class="font-bold text-sm">Anti-Link Filter</p></div>
                             ${renderControl('antiLink', s.antiLink, [{val:true, label:'ACTIVE'}, {val:false, label:'OFF'}])}
-                        </div>
-                    </div>
-                    <div class="space-y-4">
-                        <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
-                            <div><p class="font-bold text-sm">Ignore Threaded</p></div>
-                            ${renderControl('ignoreThreads', s.ignoreThreads, [{val:true, label:'ON'}, {val:false, label:'OFF'}])}
-                        </div>
-                         <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
-                            <div><p class="font-bold text-sm">Ignore Bot Nodes</p></div>
-                            ${renderControl('ignoreBots', s.ignoreBots, [{val:true, label:'ON'}, {val:false, label:'OFF'}])}
                         </div>
                          <div class="flex justify-between items-center p-6 bg-slate-950/40 rounded-3xl border border-slate-900">
                             <div><p class="font-bold text-sm">Nuke Sensitivity</p></div>
@@ -463,7 +475,7 @@ app.get('/access', (req, res) => {
                     <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Current UPLINK Key</label>
                     <input name="newPass" type="text" value="${pass}" class="w-full bg-slate-950 border border-slate-900 p-6 rounded-3xl outline-none focus:border-sky-500 text-xl font-black tracking-widest">
                 </div>
-                <p class="text-xs text-slate-500">This key is required to log into this specific server's dashboard. Keep it secure.</p>
+                <p class="text-xs text-slate-500">This key is required to log into this server's terminal. Keep it secure.</p>
             </form>
         </div>
     `, req.session.gid, 'access'));
@@ -500,15 +512,12 @@ app.get('/tickets', (req, res) => {
     if (!req.session.gid) return res.redirect('/');
     let html = `<h2 class="text-4xl font-black mb-10 tracking-tighter uppercase">Support Transcripts</h2>`;
     if (ticketTranscripts.size === 0) {
-        html += `<div class="glass p-20 rounded-[3rem] text-center text-slate-500 italic">No active sessions in buffer.</div>`;
+        html += `<div class="glass p-20 rounded-[3rem] text-center text-slate-500 italic">No active session records in cache.</div>`;
     } else {
         for (const [cid, msgs] of ticketTranscripts.entries()) {
             html += `
             <div class="glass p-8 rounded-[2.5rem] mb-6 border-l-4 border-sky-500">
-                <div class="flex justify-between mb-6">
-                    <p class="font-bold text-sky-400 uppercase text-xs tracking-widest">Channel: ${cid}</p>
-                    <span class="text-[10px] bg-sky-500/10 text-sky-500 px-3 py-1 rounded-full font-black">RECORDING</span>
-                </div>
+                <p class="font-bold text-sky-400 uppercase text-xs mb-4">Channel ID: ${cid}</p>
                 <div class="space-y-2 max-h-60 overflow-y-auto pr-4 text-xs font-mono">
                     ${msgs.map(m => `<p><span class="text-slate-600">[${m.time}]</span> <span class="text-sky-300">${m.author}:</span> <span class="text-slate-300">${m.content}</span></p>`).join('')}
                 </div>
