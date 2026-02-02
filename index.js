@@ -11,7 +11,10 @@ const {
     ButtonStyle,
     ChannelType,
     StringSelectMenuBuilder,
-    StringSelectMenuOptionBuilder
+    StringSelectMenuOptionBuilder,
+    REST,
+    Routes,
+    SlashCommandBuilder
 } = require('discord.js');
 const express = require('express');
 const session = require('cookie-session');
@@ -28,7 +31,8 @@ const CONFIG = {
 const serverPasswords = new Map();
 const loadPasswords = () => {
     if (CONFIG.RAW_PASSWORDS) {
-        CONFIG.RAW_PASSWORDS.split(',').forEach(pair => {
+        const cleanString = CONFIG.RAW_PASSWORDS.replace(/\s/g, '');
+        cleanString.split(',').forEach(pair => {
             const [id, pass] = pair.split(':');
             if (id && pass) serverPasswords.set(id.trim(), pass.trim());
         });
@@ -55,12 +59,12 @@ const getGuildSettings = (guildId) => {
             ticketMessage: "Welcome to support! How can we help you?",
             panelTitle: "🛡️ SHER LOCK SUPPORT",
             panelDesc: "Select an option below to get help.",
-            panelImage: "",
             panelColor: "#3b82f6",
             uiType: "buttons",
             targetPanelChannel: "",
             customOptions: [
-                { id: 'open_ticket', label: 'General Support', emoji: '🎫' }
+                { id: 'open_ticket', label: 'General Support', emoji: '🎫' },
+                { id: 'report_user', label: 'Report User', emoji: '🚫' }
             ]
         });
     }
@@ -78,72 +82,123 @@ const client = new Client({
     ]
 });
 
-client.once('ready', () => {
-    console.log(`[BOT] Online: ${client.user.tag}`);
-    client.user.setActivity('Sapphire-Grade Protection 🛡️', { type: ActivityType.Watching });
+// Slash Command Definitions
+const commands = [
+    new SlashCommandBuilder().setName('getpass').setDescription('Get the dashboard password (Admin only)'),
+    new SlashCommandBuilder().setName('ban').setDescription('Ban a user from the server')
+        .addUserOption(o => o.setName('target').setDescription('The user to ban').setRequired(true))
+        .addStringOption(o => o.setName('reason').setDescription('Reason for the ban')),
+    new SlashCommandBuilder().setName('tempmute').setDescription('Temporarily mute/timeout a user')
+        .addUserOption(o => o.setName('target').setDescription('The user to mute').setRequired(true))
+        .addIntegerOption(o => o.setName('minutes').setDescription('Duration in minutes').setRequired(true))
+        .addStringOption(o => o.setName('reason').setDescription('Reason')),
+    new SlashCommandBuilder().setName('setup').setDescription('Auto-generate a log channel and basic roles')
+];
+
+client.once('ready', async () => {
+    console.log(`[BOT] Connected as: ${client.user.tag}`);
+    client.user.setActivity('Shielding your server 🛡️', { type: ActivityType.Watching });
+    
+    const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
+    try {
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('[BOT] Slash commands registered successfully.');
+    } catch (e) { console.error("[BOT] Error registering commands:", e); }
 });
 
+// Helper for logging
+const sendLog = async (guild, title, description, color = "#3b82f6") => {
+    const s = getGuildSettings(guild.id);
+    if (!s.logChannelId) return;
+    const channel = guild.channels.cache.get(s.logChannelId);
+    if (channel) {
+        const embed = new EmbedBuilder().setTitle(title).setDescription(description).setColor(color).setTimestamp();
+        channel.send({ embeds: [embed] }).catch(() => {});
+    }
+};
+
+// --- TEXT COMMAND HANDLER ---
 client.on('messageCreate', async (msg) => {
     if (!msg.guild || msg.author.bot) return;
     const s = getGuildSettings(msg.guild.id);
     const isMod = msg.member.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && msg.member.roles.cache.has(s.modRoleId));
 
-    // --- PREFIX COMMANDS (Updated to / prefix) ---
-    
-    // COMMAND: /getpass
+    // Handle /getpass (Text)
     if (msg.content === '/getpass' && msg.member.permissions.has(PermissionFlagsBits.Administrator)) {
         const pass = serverPasswords.get(msg.guild.id);
-        return msg.reply(pass ? `Dashboard Password: \`${pass}\`` : "No password set in environment.");
+        return msg.reply(pass ? `Dashboard Password: \`${pass}\`` : "No password configured in Environment Variables.");
     }
 
-    // COMMAND: /ban @user reason
+    // Handle /ban (Text)
     if (msg.content.startsWith('/ban') && isMod) {
         const target = msg.mentions.members.first();
-        if (!target) return msg.reply("Mention a user to ban.");
+        if (!target) return msg.reply("Please mention a user to ban.");
+        const reason = msg.content.split(' ').slice(2).join(' ') || "No reason provided.";
         try {
-            await target.ban({ reason: msg.content.split(' ').slice(2).join(' ') || "No reason provided." });
+            await target.ban({ reason });
             msg.reply(`✅ Banned **${target.user.tag}**`);
-        } catch (e) { msg.reply("Error banning user. Check bot permissions."); }
-    }
-
-    // COMMAND: /tempmute @user duration(m) reason
-    if (msg.content.startsWith('/tempmute') && isMod) {
-        const args = msg.content.split(' ');
-        const target = msg.mentions.members.first();
-        const duration = parseInt(args[2]);
-        if (!target || isNaN(duration)) return msg.reply("Usage: `/tempmute @user [minutes] [reason]`");
-        try {
-            await target.timeout(duration * 60 * 1000, args.slice(3).join(' ') || "No reason provided.");
-            msg.reply(`⏳ Muted **${target.user.tag}** for ${duration}m`);
-        } catch (e) { msg.reply("Error muting user."); }
+            sendLog(msg.guild, "🔨 Member Banned", `User: ${target.user.tag}\nReason: ${reason}\nBy: ${msg.author.tag}`, "#ef4444");
+        } catch (e) { msg.reply("Failed to ban. Check bot hierarchy/permissions."); }
+        return;
     }
 
     // --- MODERATION LOGIC ---
     if (msg.channel.isThread() && s.ignoreThreads) return;
     if (s.ignoreBots && msg.author.bot) return;
 
-    let shouldDelete = false;
-    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) shouldDelete = true;
-    if (s.blacklist.some(word => msg.content.toLowerCase().includes(word.toLowerCase()))) shouldDelete = true;
-    if (s.autoDeleteChannels.includes(msg.channel.id)) shouldDelete = true;
+    let trigger = null;
+    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) trigger = "Link detected";
+    if (s.blacklist.some(word => word && msg.content.toLowerCase().includes(word.toLowerCase()))) trigger = "Blacklisted word";
+    if (s.autoDeleteChannels.includes(msg.channel.id)) trigger = "Auto-delete channel";
 
-    // Execute deletion if triggered and user isn't a mod
-    if (shouldDelete && !isMod) {
+    if (trigger && !isMod) {
         setTimeout(() => msg.delete().catch(()=>{}), s.deleteDelay);
+        if (trigger !== "Auto-delete channel") {
+            sendLog(msg.guild, "🛡️ Message Removed", `Author: ${msg.author.tag}\nChannel: ${msg.channel}\nReason: ${trigger}\nContent: \`${msg.content.substring(0, 100)}\``, "#f59e0b");
+        }
     }
 });
 
-// Interaction handler for tickets...
+// --- INTERACTION HANDLER ---
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.guildId) return;
     const s = getGuildSettings(interaction.guildId);
 
+    // SLASH COMMANDS
+    if (interaction.isChatInputCommand()) {
+        const isMod = interaction.member.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && interaction.member.roles.cache.has(s.modRoleId));
+
+        if (interaction.commandName === 'getpass') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) return interaction.reply({ content: "Administrator only.", ephemeral: true });
+            const pass = serverPasswords.get(interaction.guildId);
+            return interaction.reply({ content: pass ? `Password: \`${pass}\`` : "Not found.", ephemeral: true });
+        }
+
+        if (interaction.commandName === 'ban') {
+            if (!isMod) return interaction.reply({ content: "Unauthorized.", ephemeral: true });
+            const target = interaction.options.getMember('target');
+            const reason = interaction.options.getString('reason') || "No reason.";
+            await target.ban({ reason }).catch(e => interaction.reply("Failed."));
+            return interaction.reply(`✅ Banned ${target.user.tag}`);
+        }
+
+        if (interaction.commandName === 'tempmute') {
+            if (!isMod) return interaction.reply({ content: "Unauthorized.", ephemeral: true });
+            const target = interaction.options.getMember('target');
+            const mins = interaction.options.getInteger('minutes');
+            await target.timeout(mins * 60000, "Command usage").catch(() => {});
+            return interaction.reply(`⏳ Muted ${target.user.tag} for ${mins}m`);
+        }
+    }
+
+    // TICKET INTERACTIONS
     if ((interaction.isButton() && interaction.customId.startsWith('open_')) || (interaction.isStringSelectMenu() && interaction.customId === 'ticket_select')) {
-        const type = interaction.values ? interaction.values[0] : interaction.customId;
-        
+        const typeId = interaction.values ? interaction.values[0] : interaction.customId;
+        const option = s.customOptions.find(o => o.id === typeId) || { label: 'Support' };
+
         try {
-            const channel = await interaction.guild.channels.create({
-                name: `${type.replace('open_', '')}-${interaction.user.username}`,
+            const chan = await interaction.guild.channels.create({
+                name: `${option.label.toLowerCase().replace(/\s/g, '-')}-${interaction.user.username}`,
                 type: ChannelType.GuildText,
                 parent: s.ticketCategoryId || null,
                 permissionOverwrites: [
@@ -153,304 +208,199 @@ client.on('interactionCreate', async (interaction) => {
                 ]
             });
 
-            const welcomeEmbed = new EmbedBuilder()
-                .setTitle(`Ticket: ${type.replace('open_', '').toUpperCase()}`)
-                .setDescription(s.ticketMessage)
-                .setColor(s.panelColor);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger)
-            );
-
-            await channel.send({ content: `<@${interaction.user.id}> <@&${s.supportRoleId || ''}>`, embeds: [welcomeEmbed], components: [row] });
-            return interaction.reply({ content: `Ticket created: ${channel}`, ephemeral: true });
+            const embed = new EmbedBuilder().setTitle(`Ticket: ${option.label}`).setDescription(s.ticketMessage).setColor(s.panelColor);
+            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger));
+            
+            await chan.send({ content: `<@${interaction.user.id}> | Support Team`, embeds: [embed], components: [row] });
+            return interaction.reply({ content: `✅ Ticket created: ${chan}`, ephemeral: true });
         } catch (e) {
-            console.error(e);
-            return interaction.reply({ content: "Failed to create ticket. Check category/permissions.", ephemeral: true });
+            return interaction.reply({ content: "Error: Missing Category ID or Permissions.", ephemeral: true });
         }
     }
 
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
-        await interaction.reply("Closing ticket in 5 seconds...");
+        await interaction.reply("Channel will be deleted in 5 seconds...");
         setTimeout(() => interaction.channel.delete().catch(()=>{}), 5000);
     }
 });
 
 client.login(CONFIG.TOKEN);
 
-// --- WEB INTERFACE ---
+// --- DASHBOARD (WEB INTERFACE) ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({ keys: [CONFIG.SESSION_SECRET], maxAge: 24 * 60 * 60 * 1000 }));
 
-const UI = (content, activeTab = 'main', guildId) => {
-    return `
+const UI = (content, activeTab = 'main') => `
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHER LOCK Dashboard</title>
     <style>
-        body { background: #0f172a; color: #f8fafc; font-family: sans-serif; margin:0; padding: 20px; display:flex; justify-content:center;}
-        .card { background: #1e293b; padding: 25px; border-radius: 12px; width: 100%; max-width: 900px; position:relative;}
-        .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
-        .tab { color: #94a3b8; text-decoration: none; padding: 8px 16px; border-radius: 6px; font-weight: bold; }
-        .tab.active { background: #3b82f6; color: white; }
-        .section { background: #1a2233; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #3b82f6; }
-        input, textarea, select { width: 100%; padding: 12px; margin: 8px 0; background: #0f172a; color: white; border: 1px solid #334155; border-radius: 6px; box-sizing: border-box; }
-        .btn { background: #3b82f6; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; width: 100%; font-weight: bold; }
-        
-        /* Unsaved Changes Bar */
-        #unsaved-bar { 
-            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-            background: #1e293b; border: 1px solid #334155; padding: 15px 30px; 
-            border-radius: 10px; display: none; align-items: center; gap: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.8); z-index: 9999;
+        :root { --bg: #0f172a; --card: #1e293b; --accent: #3b82f6; --text: #f8fafc; --muted: #94a3b8; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .card { background: var(--card); padding: 30px; border-radius: 16px; width: 100%; max-width: 900px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        .tabs { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
+        .tab { color: var(--muted); text-decoration: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; transition: 0.2s; }
+        .tab:hover { background: #334155; }
+        .tab.active { background: var(--accent); color: white; }
+        .section { background: #1a2233; padding: 20px; border-radius: 10px; margin-bottom: 20px; border-left: 4px solid var(--accent); }
+        h3 { margin-top: 0; color: var(--accent); font-size: 1.1rem; text-transform: uppercase; letter-spacing: 1px; }
+        label { display: block; margin-bottom: 5px; font-size: 14px; font-weight: bold; color: var(--muted); }
+        input, select, textarea { width: 100%; padding: 12px; margin-bottom: 15px; background: #0f172a; color: white; border: 1px solid #334155; border-radius: 8px; box-sizing: border-box; }
+        .btn { background: var(--accent); color: white; border: none; padding: 15px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; }
+        .btn:hover { opacity: 0.9; }
+        #save-bar { 
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); 
+            background: #1e293b; border: 2px solid var(--accent); padding: 15px 30px; 
+            border-radius: 50px; display: none; align-items: center; gap: 20px; 
+            box-shadow: 0 10px 40px rgba(0,0,0,0.8); z-index: 999;
         }
-        .shake { animation: shake 0.3s cubic-bezier(.36,.07,.19,.97) both; background: #991b1b !important; }
-        @keyframes shake {
-            10%, 90% { transform: translate3d(-51%, 0, 0); }
-            20%, 80% { transform: translate3d(-48%, 0, 0); }
-            30%, 50%, 70% { transform: translate3d(-54%, 0, 0); }
-            40%, 60% { transform: translate3d(-46%, 0, 0); }
-        }
-
-        .btn-add { background: #10b981; margin-bottom: 10px; width: auto; padding: 8px 15px; }
-        .btn-del { background: #ef4444; width: auto; padding: 8px; }
-        .opt-row { display: grid; grid-template-columns: 1fr 1fr 1fr 40px; gap: 10px; margin-bottom: 5px; align-items: center; }
-        
-        .overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:transparent; z-index:9998; display:none;}
+        .opt-row { display: grid; grid-template-columns: 1fr 1fr 1fr 40px; gap: 10px; margin-bottom: 10px; }
+        .btn-del { background: #ef4444; color: white; border: none; border-radius: 6px; cursor: pointer; }
     </style>
 </head>
 <body>
-    <div id="block-overlay" class="overlay"></div>
     <div class="card">
         <div class="tabs">
             <a href="/dashboard" class="tab ${activeTab==='main'?'active':''}">🛡️ Main</a>
-            <a href="/moderation" class="tab ${activeTab==='mod'?'active':''}">⚔️ Mod</a>
-            <a href="/tickets" class="tab ${activeTab==='tickets'?'active':''}">🎫 Tickets</a>
+            <a href="/moderation" class="tab ${activeTab==='mod'?'active':''}">⚔️ Moderation</a>
+            <a href="/tickets" class="tab ${activeTab==='tickets'?'active':''}">🎫 Ticket System</a>
         </div>
         ${content}
     </div>
-
-    <div id="unsaved-bar">
+    <div id="save-bar">
         <span>Careful — you have unsaved changes!</span>
-        <div style="display:flex; gap:10px;">
-            <button onclick="location.reload()" style="background:transparent; color:white; border:none; cursor:pointer;">Reset</button>
-            <button onclick="document.querySelector('form').submit()" style="background:#10b981; color:white; border:none; padding:8px 15px; border-radius:5px; cursor:pointer;">Save Changes</button>
-        </div>
+        <button onclick="document.forms[0].submit()" style="background:#10b981; border:none; color:white; padding:8px 20px; border-radius:20px; cursor:pointer; font-weight:bold;">Save Changes</button>
     </div>
-
     <script>
-        let changed = false;
-        const bar = document.getElementById('unsaved-bar');
-        const overlay = document.getElementById('block-overlay');
-
-        function markChanged() {
-            changed = true;
-            bar.style.display = 'flex';
-        }
-
-        document.querySelectorAll('input, textarea, select').forEach(el => {
-            el.addEventListener('change', markChanged);
-            el.addEventListener('input', markChanged);
+        document.querySelectorAll('input, select, textarea').forEach(el => {
+            el.addEventListener('input', () => document.getElementById('save-bar').style.display = 'flex');
         });
-
-        document.querySelectorAll('a.tab').forEach(a => {
-            a.addEventListener('click', (e) => {
-                if(changed) {
-                    e.preventDefault();
-                    bar.classList.add('shake');
-                    overlay.style.display = 'block';
-                    setTimeout(() => { 
-                        bar.classList.remove('shake');
-                        overlay.style.display = 'none';
-                    }, 400);
-                }
-            });
-        });
-
-        function addTicketOption() {
-            const container = document.getElementById('ticket-opts');
-            const div = document.createElement('div');
-            div.className = 'opt-row';
-            div.innerHTML = \`
-                <input name="labels[]" placeholder="Label">
-                <input name="ids[]" placeholder="open_xxx">
-                <input name="emojis[]" placeholder="Emoji">
-                <button type="button" class="btn btn-del" onclick="this.parentElement.remove(); markChanged();">✕</button>
-            \`;
-            container.appendChild(div);
-            markChanged();
+        function addOpt() {
+            const div = document.createElement('div'); div.className = 'opt-row';
+            div.innerHTML = '<input name="l[]" placeholder="Label"><input name="i[]" placeholder="open_xxx"><input name="e[]" placeholder="Emoji"><button type="button" class="btn-del" onclick="this.parentElement.remove()">✕</button>';
+            document.getElementById('opt-cont').appendChild(div);
+            document.getElementById('save-bar').style.display = 'flex';
         }
     </script>
 </body>
-</html>
-`;
-};
+</html>`;
 
-app.get('/', (req, res) => {
-    res.send(`<body style="background:#0f172a; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;">
-        <form action="/login" method="POST" style="background:#1e293b; padding:40px; border-radius:15px; width:320px;">
-            <h2 style="text-align:center; color:#3b82f6; font-family:sans-serif;">SHER LOCK</h2>
-            <input name="gid" placeholder="Server ID" required style="width:100%; padding:12px; margin-bottom:15px; border-radius:8px; border:none; background:#0f172a; color:white;">
-            <input name="pass" type="password" placeholder="Password" required style="width:100%; padding:12px; margin-bottom:20px; border-radius:8px; border:none; background:#0f172a; color:white;">
-            <button style="width:100%; padding:14px; background:#3b82f6; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">LOGIN</button>
-        </form>
-    </body>`);
-});
+app.get('/', (req, res) => res.send('<body style="background:#0f172a; color:white; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh;"><form action="/login" method="POST" style="background:#1e293b; padding:40px; border-radius:15px; width:300px;"><h2 style="text-align:center;color:#3b82f6">SHER LOCK LOGIN</h2><input name="gid" placeholder="Server ID" style="width:100%; padding:12px; margin:10px 0; background:#0f172a; border:1px solid #334155; color:white; border-radius:8px;"><input name="pass" type="password" placeholder="Password" style="width:100%; padding:12px; margin:10px 0; background:#0f172a; border:1px solid #334155; color:white; border-radius:8px;"><button style="width:100%; padding:12px; background:#3b82f6; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">ENTER DASHBOARD</button></form></body>'));
 
-app.post('/login', (req, res) => { 
-    if(serverPasswords.get(req.body.gid) === req.body.pass) { req.session.gid = req.body.gid; res.redirect('/dashboard'); } 
-    else res.send("Invalid Credentials."); 
+app.post('/login', (req, res) => {
+    if (serverPasswords.get(req.body.gid) === req.body.pass) { req.session.gid = req.body.gid; res.redirect('/dashboard'); }
+    else res.send("Invalid Credentials.");
 });
 
 app.get('/dashboard', (req, res) => {
-    const gid = req.session.gid; if(!gid) return res.redirect('/');
-    const s = getGuildSettings(gid);
+    const s = getGuildSettings(req.session.gid);
     res.send(UI(`
         <form action="/save-main" method="POST">
             <div class="section">
-                <label>Bot Nickname</label><input name="nickname" value="${s.customNickname}">
-                <label>Mod Role ID</label><input name="modRole" value="${s.modRoleId}">
-                <label>Log Channel ID</label><input name="logChan" value="${s.logChannelId}">
+                <h3>Global Identity</h3>
+                <label>Bot Nickname</label><input name="nick" value="${s.customNickname}">
+                <label>Mod Role ID (Users who can skip filters)</label><input name="mod" value="${s.modRoleId}">
+                <label>Log Channel ID</label><input name="logs" value="${s.logChannelId}">
             </div>
-            <button class="btn">Save Changes</button>
+            <button class="btn">Save Main Settings</button>
         </form>
-    `, 'main', gid));
+    `, 'main'));
 });
 
 app.get('/moderation', (req, res) => {
-    const gid = req.session.gid; if(!gid) return res.redirect('/');
-    const s = getGuildSettings(gid);
-    res.send(UI(`
-        <form action="/save-mod" method="POST">
-            <div class="section">
-                <label><input type="checkbox" name="ignoreBots" ${s.ignoreBots?'checked':''} style="width:auto"> Ignore Bots</label><br>
-                <label><input type="checkbox" name="ignoreThreads" ${s.ignoreThreads?'checked':''} style="width:auto"> Ignore Threads</label><br>
-                <label><input type="checkbox" name="antiLink" ${s.antiLink?'checked':''} style="width:auto"> Anti-Link</label>
-            </div>
-            <div class="section">
-                <label>Blacklist (comma separated)</label><textarea name="words">${s.blacklist.join(', ')}</textarea>
-                <label>Deletion Delay (ms)</label><input type="number" name="delay" value="${s.deleteDelay}">
-            </div>
-            <button class="btn">Save Changes</button>
-        </form>
-    `, 'mod', gid));
-});
-
-app.get('/tickets', (req, res) => {
-    const gid = req.session.gid; if(!gid) return res.redirect('/');
+    const gid = req.session.gid;
     const s = getGuildSettings(gid);
     const guild = client.guilds.cache.get(gid);
     const channels = guild ? guild.channels.cache.filter(c => c.type === ChannelType.GuildText) : [];
+    res.send(UI(`
+        <form action="/save-mod" method="POST">
+            <div class="section">
+                <h3>Auto-Delete Monitor</h3>
+                <label>Select Channels to Clean</label>
+                <select name="autoDel[]" multiple style="height:150px">
+                    ${channels.map(c => `<option value="${c.id}" ${s.autoDeleteChannels.includes(c.id)?'selected':''}>#${c.name}</option>`).join('')}
+                </select>
+                <label>Delete Delay (ms)</label><input type="number" name="delay" value="${s.deleteDelay}">
+            </div>
+            <div class="section">
+                <h3>Word & Link Protection</h3>
+                <label><input type="checkbox" name="antiLink" ${s.antiLink?'checked':''} style="width:auto"> Anti-Link Protection</label>
+                <label>Blacklisted Words (Comma Separated)</label>
+                <textarea name="words" rows="4">${s.blacklist.join(', ')}</textarea>
+            </div>
+            <button class="btn">Update Protection</button>
+        </form>
+    `, 'mod'));
+});
 
+app.get('/tickets', (req, res) => {
+    const gid = req.session.gid;
+    const s = getGuildSettings(gid);
+    const guild = client.guilds.cache.get(gid);
+    const channels = guild ? guild.channels.cache.filter(c => c.type === ChannelType.GuildText) : [];
     res.send(UI(`
         <form action="/save-tickets" method="POST">
             <div class="section">
-                <label>Target Channel (Auto-Post Panel)</label>
-                <select name="targetChan">
-                    <option value="">-- Manual !setup only --</option>
-                    ${channels.map(c => `<option value="${c.id}" ${s.targetPanelChannel===c.id?'selected':''}>#${c.name}</option>`).join('')}
-                </select>
-                <label>Ticket Category ID</label><input name="catId" value="${s.ticketCategoryId}">
-                <label>Support Role ID</label><input name="supportRole" value="${s.supportRoleId}">
-                <label>Ticket Greeting</label><textarea name="tMsg">${s.ticketMessage}</textarea>
+                <h3>Deployment</h3>
+                <label>Channel to post Ticket Panel</label>
+                <select name="chan">${channels.map(c => `<option value="${c.id}" ${s.targetPanelChannel===c.id?'selected':''}>#${c.name}</option>`).join('')}</select>
+                <label>Category ID for new tickets</label><input name="cat" value="${s.ticketCategoryId}">
+                <label>Support Role ID (Allowed to view tickets)</label><input name="supp" value="${s.supportRoleId}">
             </div>
-            
             <div class="section">
-                <label>UI Style</label>
-                <select name="uiType">
-                    <option value="buttons" ${s.uiType==='buttons'?'selected':''}>Buttons</option>
-                    <option value="dropdown" ${s.uiType==='dropdown'?'selected':''}>Dropdown Menu</option>
-                </select>
-                <label>Panel Title</label><input name="pTitle" value="${s.panelTitle}">
-                <label>Panel Description</label><textarea name="pDesc">${s.panelDesc}</textarea>
-            </div>
-
-            <div class="section">
-                <label>Interactive Elements</label>
-                <div id="ticket-opts">
-                    ${s.customOptions.map(o => `
-                        <div class="opt-row">
-                            <input name="labels[]" value="${o.label}" placeholder="Label">
-                            <input name="ids[]" value="${o.id}" placeholder="open_xxx">
-                            <input name="emojis[]" value="${o.emoji}" placeholder="Emoji">
-                            <button type="button" class="btn btn-del" onclick="this.parentElement.remove(); markChanged();">✕</button>
-                        </div>
-                    `).join('')}
+                <h3>Interactive Options</h3>
+                <div id="opt-cont">
+                    ${s.customOptions.map(o => `<div class="opt-row"><input name="l[]" value="${o.label}"><input name="i[]" value="${o.id}"><input name="e[]" value="${o.emoji}"><button type="button" class="btn-del" onclick="this.parentElement.remove()">✕</button></div>`).join('')}
                 </div>
-                <button type="button" class="btn btn-add" onclick="addTicketOption()">+ Add Element</button>
+                <button type="button" class="btn" style="background:#475569; margin-top:10px;" onclick="addOpt()">+ Add Option</button>
             </div>
-            <button class="btn" style="background:#10b981;">Save Changes</button>
+            <button class="btn" style="background:#10b981">Deploy & Update Panel</button>
         </form>
-    `, 'tickets', gid));
+    `, 'tickets'));
 });
 
+// SAVE HANDLERS
 app.post('/save-main', (req, res) => {
     const s = getGuildSettings(req.session.gid);
-    s.customNickname = req.body.nickname;
-    s.modRoleId = req.body.modRole;
-    s.logChannelId = req.body.logChan;
+    s.customNickname = req.body.nick;
+    s.modRoleId = req.body.mod;
+    s.logChannelId = req.body.logs;
     res.redirect('/dashboard');
 });
 
 app.post('/save-mod', (req, res) => {
     const s = getGuildSettings(req.session.gid);
-    s.ignoreBots = req.body.ignoreBots === 'on';
-    s.ignoreThreads = req.body.ignoreThreads === 'on';
+    s.autoDeleteChannels = Array.isArray(req.body['autoDel[]']) ? req.body['autoDel[]'] : (req.body['autoDel[]'] ? [req.body['autoDel[]']] : []);
+    s.deleteDelay = parseInt(req.body.delay) || 1200;
     s.antiLink = req.body.antiLink === 'on';
     s.blacklist = req.body.words.split(',').map(w => w.trim()).filter(w => w);
-    s.deleteDelay = parseInt(req.body.delay) || 1200;
     res.redirect('/moderation');
 });
 
 app.post('/save-tickets', async (req, res) => {
-    const gid = req.session.gid;
-    const s = getGuildSettings(gid);
-    s.targetPanelChannel = req.body.targetChan;
-    s.ticketCategoryId = req.body.catId;
-    s.supportRoleId = req.body.supportRole;
-    s.uiType = req.body.uiType;
-    s.panelTitle = req.body.pTitle;
-    s.panelDesc = req.body.pDesc;
-    s.ticketMessage = req.body.tMsg;
-    
-    const l = req.body['labels[]'];
-    const i = req.body['ids[]'];
-    const e = req.body['emojis[]'];
-    
-    if(l) {
-        const labels = Array.isArray(l) ? l : [l];
-        const ids = Array.isArray(i) ? i : [i];
-        const emojis = Array.isArray(e) ? e : [e];
-        s.customOptions = labels.map((label, idx) => ({ 
-            label, 
-            id: ids[idx], 
-            emoji: emojis[idx] || '🎫' 
-        })).filter(o => o.label && o.id);
-    } else {
-        s.customOptions = [];
+    const s = getGuildSettings(req.session.gid);
+    s.targetPanelChannel = req.body.chan;
+    s.ticketCategoryId = req.body.cat;
+    s.supportRoleId = req.body.supp;
+
+    if(req.body['l[]']) {
+        const labels = Array.isArray(req.body['l[]']) ? req.body['l[]'] : [req.body['l[]']];
+        const ids = Array.isArray(req.body['i[]']) ? req.body['i[]'] : [req.body['i[]']];
+        const emojis = Array.isArray(req.body['e[]']) ? req.body['e[]'] : [req.body['e[]']];
+        s.customOptions = labels.map((l, idx) => ({ label: l, id: ids[idx], emoji: emojis[idx] || '🎫' }));
     }
 
-    // Auto-deploy
-    if (s.targetPanelChannel) {
-        const guild = client.guilds.cache.get(gid);
-        const chan = guild?.channels.cache.get(s.targetPanelChannel);
-        if (chan) {
-            const embed = new EmbedBuilder().setTitle(s.panelTitle).setDescription(s.panelDesc).setColor(s.panelColor);
-            const row = new ActionRowBuilder();
-            if (s.uiType === 'dropdown' && s.customOptions.length > 0) {
-                const menu = new StringSelectMenuBuilder().setCustomId('ticket_select').setPlaceholder('Choose a category...');
-                s.customOptions.forEach(o => menu.addOptions(new StringSelectMenuOptionBuilder().setLabel(o.label).setValue(o.id).setEmoji(o.emoji)));
-                row.addComponents(menu);
-            } else if (s.customOptions.length > 0) {
-                s.customOptions.forEach(o => row.addComponents(new ButtonBuilder().setCustomId(o.id).setLabel(o.label).setEmoji(o.emoji).setStyle(ButtonStyle.Secondary)));
-            }
-            await chan.send({ embeds: [embed], components: s.customOptions.length ? [row] : [] }).catch(console.error);
-        }
+    const chan = client.channels.cache.get(s.targetPanelChannel);
+    if(chan) {
+        const embed = new EmbedBuilder().setTitle(s.panelTitle).setDescription(s.panelDesc).setColor(s.panelColor);
+        const row = new ActionRowBuilder();
+        s.customOptions.forEach(o => row.addComponents(new ButtonBuilder().setCustomId(o.id).setLabel(o.label).setEmoji(o.emoji).setStyle(ButtonStyle.Secondary)));
+        await chan.send({ embeds: [embed], components: [row] }).catch(() => {});
     }
-
     res.redirect('/tickets');
 });
 
-app.listen(CONFIG.PORT, () => console.log(`Dashboard active on port ${CONFIG.PORT}`));
+app.listen(CONFIG.PORT);
