@@ -9,6 +9,8 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    StringSelectMenuBuilder,
+    StringSelectMenuOptionBuilder,
     ChannelType,
     REST,
     Routes,
@@ -19,12 +21,12 @@ const express = require('express');
 const session = require('cookie-session');
 const bodyParser = require('body-parser');
 
-// --- CONFIGURATION & PASSWORD LOADING ---
+// --- CONFIGURATION & ENV LOADING ---
 const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
     RAW_PASSWORDS: process.env.GUILD_PASSWORDS || "", 
     PORT: process.env.PORT || 10000,
-    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-lock-ultimate-ref'
+    SESSION_SECRET: process.env.SESSION_SECRET || 'sher-lock-ultimate-v4-ref'
 };
 
 const serverPasswords = new Map();
@@ -39,240 +41,259 @@ const loadPasswords = () => {
 };
 loadPasswords();
 
-// --- DATABASE (In-Memory State) ---
+// --- PERSISTENT DATA STATE ---
 const db = new Map();
 const getGuildSettings = (guildId) => {
     if (!db.has(guildId)) {
         db.set(guildId, {
-            // Moderation
+            // General & Identity
+            logChannelId: "",
+            modRoleId: "",
+            // Moderation Shield
+            antiLink: false,
+            antiSpam: true,
+            blacklist: [],
             autoDeleteChannels: [],
             deleteDelay: 3000,
             ignoreBots: true,
             ignoreThreads: true,
-            antiLink: false,
-            blacklist: [],
-            logChannelId: "",
-            modRoleId: "",
-            // Ticket Customization
-            ticketCategoryId: "",
-            targetPanelChannel: "",
-            panelTitle: "🛡️ SUPPORT TERMINAL",
-            panelDesc: "Need assistance? Click the button below to start a private consultation with our staff.",
+            // Ticket Studio Panel
+            panelType: "BUTTON", // BUTTON or DROPDOWN
+            panelTitle: "🛡️ SECURE SUPPORT TERMINAL",
+            panelDesc: "Please select the department that best matches your inquiry.",
             panelColor: "#3b82f6",
-            panelButtonLabel: "Open Ticket",
-            panelButtonEmoji: "🎫",
-            ticketWelcomeMsg: "Hello {user}, thank you for reaching out. Please describe your issue in detail and a staff member will be with you shortly.",
-            ticketCloseMsg: "This ticket has been marked as resolved. Closing in 5 seconds..."
+            panelImage: "",
+            panelFooter: "SHER LOCK PRO Security Layer",
+            targetPanelChannel: "",
+            ticketCategoryId: "",
+            // Multi-Department Logic
+            ticketOptions: [
+                { id: "gen_support", label: "General Support", emoji: "🎫", welcome: "Hello {user}, a staff member will be with you shortly. Please explain your request." },
+                { id: "billing", label: "Billing & Payments", emoji: "💰", welcome: "Hello {user}, please provide your Transaction ID for faster assistance." }
+            ],
+            ticketCloseMsg: "🔒 This ticket has been resolved and will be closed in 5 seconds."
         });
     }
     return db.get(guildId);
 };
 
-// --- DISCORD CLIENT SETUP ---
+// --- SPAM CACHE ---
+const spamMap = new Map();
+
+// --- DISCORD CLIENT INITIALIZATION ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
         GatewayIntentBits.GuildMessages, 
         GatewayIntentBits.MessageContent, 
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildModeration
+        GatewayIntentBits.GuildPresences
     ]
 });
 
-// Slash Commands
-const commands = [
-    new SlashCommandBuilder().setName('getpass').setDescription('Show dashboard password'),
-    new SlashCommandBuilder().setName('ban').setDescription('Ban a user')
-        .addUserOption(o => o.setName('target').setDescription('Target').setRequired(true))
-        .addStringOption(o => o.setName('reason').setDescription('Reason')),
-    new SlashCommandBuilder().setName('tempmute').setDescription('Timeout a user')
-        .addUserOption(o => o.setName('target').setDescription('Target').setRequired(true))
-        .addIntegerOption(o => o.setName('minutes').setDescription('Duration').setRequired(true))
-];
-
-client.once('ready', async () => {
-    console.log(`[SYSTEM] Logged in as ${client.user.tag}`);
-    client.user.setActivity('SHER LOCK PRO Security', { type: ActivityType.Shielding });
-    
-    const rest = new REST({ version: '10' }).setToken(CONFIG.TOKEN);
-    try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('[SYSTEM] Commands synced.');
-    } catch (e) { console.error(e); }
+client.once('ready', () => {
+    console.log(`[CORE] Authorized as ${client.user.tag}`);
+    client.user.setPresence({
+        activities: [{ name: 'SHER LOCK PRO V4', type: ActivityType.Competing }],
+        status: 'dnd'
+    });
 });
 
-// Utility: Logs
+// --- LOGGING ENGINE ---
 const sendLog = async (guild, title, description, color = "#3b82f6") => {
     const s = getGuildSettings(guild.id);
     if (!s.logChannelId) return;
-    const channel = guild.channels.cache.get(s.logChannelId);
-    if (channel) {
-        const embed = new EmbedBuilder().setTitle(title).setDescription(description).setColor(color).setTimestamp();
-        channel.send({ embeds: [embed] }).catch(() => {});
-    }
+    try {
+        const channel = await guild.channels.fetch(s.logChannelId);
+        if (channel) {
+            const embed = new EmbedBuilder()
+                .setTitle(title)
+                .setDescription(description)
+                .setColor(color)
+                .setTimestamp()
+                .setFooter({ text: "SHER LOCK PRO Security Logs" });
+            await channel.send({ embeds: [embed] });
+        }
+    } catch (e) { console.error("[LOG ERROR]", e.message); }
 };
 
-// --- CORE LOGIC: MODERATION ---
+// --- CORE MODERATION SCANNER ---
 client.on('messageCreate', async (msg) => {
     if (!msg.guild || msg.author.id === client.user.id) return;
     const s = getGuildSettings(msg.guild.id);
-    const isMod = msg.member?.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && msg.member?.roles.cache.has(s.modRoleId));
-
-    // Admin Password Command
-    if (msg.content === '!getpass' || msg.content === '/getpass') {
+    
+    // Command: Get Password
+    if (msg.content === '!getpass') {
         if (!msg.member.permissions.has(PermissionFlagsBits.Administrator)) return;
         const pass = serverPasswords.get(msg.guild.id);
-        return msg.reply(pass ? `Dashboard Password: \`${pass}\`` : "No password found.");
+        return msg.reply(pass ? `Dashboard Access Key: \`${pass}\`` : "No access key configured for this Server ID.");
     }
 
-    // Protection Logic
-    if (s.ignoreBots && msg.author.bot) return;
-    if (s.ignoreThreads && msg.channel.isThread()) return;
+    // Bypass for Admins/Mods
+    const isMod = msg.member?.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && msg.member?.roles.cache.has(s.modRoleId));
     if (isMod) return;
 
-    let trigger = null;
-    if (s.antiLink && msg.content.match(/https?:\/\/[^\s]+/)) trigger = "External Link Detected";
-    if (s.blacklist.length > 0 && s.blacklist.some(word => word && msg.content.toLowerCase().includes(word.toLowerCase()))) trigger = "Blacklisted Phrase";
-    if (s.autoDeleteChannels.includes(msg.channel.id)) trigger = "Auto-Delete Channel Activity";
+    // Filters
+    if (s.ignoreBots && msg.author.bot) return;
+    if (s.ignoreThreads && msg.channel.isThread()) return;
 
-    if (trigger) {
-        setTimeout(() => msg.delete().catch(()=>{}), s.deleteDelay);
-        if (trigger !== "Auto-Delete Channel Activity") {
-            sendLog(msg.guild, "🛡️ Security Violation", `**User:** ${msg.author.tag}\n**Trigger:** ${trigger}\n**Content:** ${msg.content}`, "#ff4757");
+    let violation = null;
+
+    // 1. Anti-Link
+    if (s.antiLink && /(https?:\/\/[^\s]+)/g.test(msg.content)) violation = "Unauthorized Link";
+
+    // 2. Blacklist
+    if (!violation && s.blacklist.some(word => msg.content.toLowerCase().includes(word.toLowerCase()))) violation = "Blacklisted Term";
+
+    // 3. Anti-Spam (5 msgs in 3s)
+    if (!violation && s.antiSpam) {
+        const now = Date.now();
+        const userData = spamMap.get(msg.author.id) || [];
+        const recentMsgs = userData.filter(t => now - t < 3000);
+        recentMsgs.push(now);
+        spamMap.set(msg.author.id, recentMsgs);
+        if (recentMsgs.length >= 5) violation = "Spam Detection";
+    }
+
+    // 4. Auto-Delete Channel
+    const isAutoDeleteChan = s.autoDeleteChannels.includes(msg.channel.id);
+
+    if (violation || isAutoDeleteChan) {
+        setTimeout(() => msg.delete().catch(() => {}), s.deleteDelay);
+        if (violation) {
+            sendLog(msg.guild, "🛡️ Shield Intervention", `**User:** ${msg.author.tag} (${msg.author.id})\n**Reason:** ${violation}\n**Channel:** ${msg.channel}\n**Content:** \`${msg.content.substring(0, 500)}\``, "#ef4444");
         }
     }
 });
 
-// --- CORE LOGIC: INTERACTIONS ---
+// --- TICKET & INTERACTION HANDLER ---
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.guildId) return;
     const s = getGuildSettings(interaction.guildId);
 
-    if (interaction.isChatInputCommand()) {
-        const isMod = interaction.member.permissions.has(PermissionFlagsBits.Administrator) || (s.modRoleId && interaction.member.roles.cache.has(s.modRoleId));
-        
-        if (interaction.commandName === 'getpass') {
-            const pass = serverPasswords.get(interaction.guildId);
-            return interaction.reply({ content: pass ? `Password: \`${pass}\`` : "No password set.", flags: MessageFlags.Ephemeral });
+    const openTicket = async (optionId, user) => {
+        const opt = s.ticketOptions.find(o => o.id === optionId) || s.ticketOptions[0];
+        try {
+            const channel = await interaction.guild.channels.create({
+                name: `${opt.emoji}-${opt.label.toLowerCase().replace(/\s+/g, '-')}-${user.username}`,
+                type: ChannelType.GuildText,
+                parent: s.ticketCategoryId || null,
+                permissionOverwrites: [
+                    { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                    { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks] },
+                    { id: s.modRoleId || interaction.guild.id, allow: [PermissionFlagsBits.ViewChannel] }
+                ]
+            });
+
+            const welcomeEmbed = new EmbedBuilder()
+                .setTitle(`${opt.emoji} ${opt.label}`)
+                .setDescription(opt.welcome.replace('{user}', `<@${user.id}>`))
+                .setColor(s.panelColor)
+                .setTimestamp();
+
+            const closeRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+            );
+
+            await channel.send({ content: `<@${user.id}> | Staff`, embeds: [welcomeEmbed], components: [closeRow] });
+            return channel;
+        } catch (e) {
+            console.error(e);
+            return null;
         }
+    };
 
-        if (!isMod) return interaction.reply({ content: "Insufficient permissions.", flags: MessageFlags.Ephemeral });
-
-        if (interaction.commandName === 'ban') {
-            const target = interaction.options.getMember('target');
-            await target.ban();
-            interaction.reply(`🔨 **${target.user.tag}** has been banned.`);
-            sendLog(interaction.guild, "Hammer Swung", `${target.user.tag} banned by ${interaction.user.tag}`, "#ff4757");
+    if (interaction.isButton()) {
+        if (interaction.customId.startsWith('tkt_')) {
+            const optId = interaction.customId.replace('tkt_', '');
+            const chan = await openTicket(optId, interaction.user);
+            interaction.reply({ content: chan ? `Ticket created: ${chan}` : "Failed to create channel. Check Category ID.", flags: MessageFlags.Ephemeral });
         }
-
-        if (interaction.commandName === 'tempmute') {
-            const target = interaction.options.getMember('target');
-            const mins = interaction.options.getInteger('minutes');
-            await target.timeout(mins * 60000);
-            interaction.reply(`⏳ **${target.user.tag}** muted for ${mins}m.`);
+        if (interaction.customId === 'close_ticket') {
+            await interaction.reply({ content: s.ticketCloseMsg });
+            sendLog(interaction.guild, "🎫 Ticket Closed", `**Channel:** ${interaction.channel.name}\n**Closed By:** ${interaction.user.tag}`, "#f59e0b");
+            setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
         }
     }
 
-    if (interaction.isButton()) {
-        if (interaction.customId === 'open_ticket') {
-            try {
-                const chan = await interaction.guild.channels.create({
-                    name: `ticket-${interaction.user.username}`,
-                    type: ChannelType.GuildText,
-                    parent: s.ticketCategoryId || null,
-                    permissionOverwrites: [
-                        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles] },
-                        { id: s.modRoleId || interaction.guild.id, allow: [PermissionFlagsBits.ViewChannel] }
-                    ]
-                });
-                
-                const welcome = s.ticketWelcomeMsg.replace('{user}', `<@${interaction.user.id}>`);
-                const embed = new EmbedBuilder().setTitle("Support Session").setDescription(welcome).setColor(s.panelColor);
-                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒'));
-                
-                await chan.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
-                interaction.reply({ content: `Ticket opened: ${chan}`, flags: MessageFlags.Ephemeral });
-            } catch (e) {
-                interaction.reply({ content: "Deployment failed. Ensure Category ID is valid.", flags: MessageFlags.Ephemeral });
-            }
-        }
-
-        if (interaction.customId === 'close_ticket') {
-            interaction.reply(s.ticketCloseMsg);
-            setTimeout(() => interaction.channel.delete().catch(()=>{}), 5000);
-        }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'tkt_select') {
+        const chan = await openTicket(interaction.values[0], interaction.user);
+        interaction.reply({ content: chan ? `Ticket created: ${chan}` : "Error creating ticket.", flags: MessageFlags.Ephemeral });
     }
 });
 
 client.login(CONFIG.TOKEN);
 
-// --- DASHBOARD: EXPRESS ENGINE ---
+// --- DASHBOARD ENGINE ---
 const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(session({ keys: [CONFIG.SESSION_SECRET], maxAge: 24 * 60 * 60 * 1000 }));
 
-const LAYOUT = (content, tab, gid) => {
+const THEME = (content, tab, gid) => {
     const s = getGuildSettings(gid);
     return `
-<!DOCTYPE html><html><head><title>SHER LOCK | Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!DOCTYPE html><html><head><title>SHER LOCK PRO | Dashboard</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-    :root { --bg: #0b0f1a; --card: #161b2c; --accent: #3b82f6; --danger: #ef4444; --success: #10b981; --text: #f1f5f9; --muted: #94a3b8; }
-    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; margin: 0; display: flex; justify-content: center; }
-    .container { width: 100%; max-width: 1000px; padding: 40px 20px; }
-    .card { background: var(--card); border-radius: 20px; padding: 30px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); border: 1px solid #2d3748; }
-    .nav { display: flex; gap: 15px; margin-bottom: 30px; border-bottom: 1px solid #2d3748; padding-bottom: 15px; overflow-x: auto; }
-    .nav a { text-decoration: none; color: var(--muted); font-weight: 600; padding: 10px 20px; border-radius: 10px; transition: 0.3s; white-space: nowrap; }
-    .nav a.active { background: var(--accent); color: white; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    .section { background: rgba(255,255,255,0.03); padding: 20px; border-radius: 15px; border-left: 4px solid var(--accent); margin-bottom: 20px; }
-    h2 { margin: 0 0 20px 0; color: var(--accent); font-size: 1.5rem; }
-    label { display: block; margin: 15px 0 5px; font-weight: bold; color: var(--muted); font-size: 13px; text-transform: uppercase; }
-    input, textarea, select { width: 100%; padding: 14px; background: #0b0f1a; border: 1px solid #2d3748; color: white; border-radius: 10px; box-sizing: border-box; font-size: 14px; }
-    .btn { background: var(--accent); color: white; border: none; padding: 16px; width: 100%; border-radius: 12px; cursor: pointer; font-weight: bold; font-size: 16px; margin-top: 20px; }
-    .btn-save { background: var(--success); }
-    /* DISCORD PREVIEW */
-    .discord-mock { background: #313338; border-radius: 10px; padding: 20px; margin-top: 20px; }
-    .discord-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-    .bot-tag { background: #5865f2; font-size: 10px; padding: 2px 5px; border-radius: 3px; font-weight: bold; }
-    .discord-embed { background: #2b2d31; border-left: 4px solid ${s.panelColor}; padding: 15px; border-radius: 5px; }
-    .discord-btn { background: #4e5058; color: white; padding: 8px 16px; border-radius: 4px; font-size: 14px; margin-top: 15px; display: inline-block; }
-    #save-notify { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: var(--card); border: 2px solid var(--accent); padding: 15px 40px; border-radius: 50px; display: none; align-items: center; gap: 20px; box-shadow: 0 10px 50px black; z-index: 1000; }
+    :root { --bg: #0b0e14; --card: #151921; --accent: #3b82f6; --danger: #ef4444; --success: #22c55e; --text: #e2e8f0; --border: #262c3a; }
+    body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 20px; display: flex; justify-content: center; }
+    .wrapper { width: 100%; max-width: 1100px; }
+    .glass-card { background: var(--card); border: 1px solid var(--border); border-radius: 24px; padding: 40px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+    .sidebar { display: flex; gap: 15px; margin-bottom: 40px; border-bottom: 1px solid var(--border); padding-bottom: 20px; overflow-x: auto; }
+    .sidebar a { text-decoration: none; color: #94a3b8; font-weight: 600; padding: 12px 24px; border-radius: 12px; transition: 0.2s; white-space: nowrap; }
+    .sidebar a.active { background: var(--accent); color: white; box-shadow: 0 4px 15px rgba(59,130,246,0.4); }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
+    .input-group { margin-bottom: 20px; }
+    label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 700; text-transform: uppercase; color: #64748b; letter-spacing: 1px; }
+    input, select, textarea { width: 100%; padding: 14px; background: #0b0e14; border: 1px solid var(--border); border-radius: 12px; color: white; box-sizing: border-box; font-size: 14px; transition: border 0.2s; }
+    input:focus { border-color: var(--accent); outline: none; }
+    .btn { cursor: pointer; border: none; padding: 16px; border-radius: 12px; font-weight: 700; font-size: 16px; transition: 0.2s; width: 100%; }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-outline { background: transparent; border: 2px solid var(--border); color: white; }
+    .btn-save { background: var(--success); color: white; margin-top: 30px; }
+    .opt-card { background: #1c2331; border: 1px solid var(--border); padding: 20px; border-radius: 16px; margin-bottom: 20px; position: relative; }
+    .remove-opt { position: absolute; top: 15px; right: 15px; color: var(--danger); cursor: pointer; font-size: 12px; }
+    /* PREVIEW */
+    .preview-box { background: #313338; border-radius: 12px; padding: 20px; margin-top: 20px; }
+    .preview-embed { background: #2b2d31; border-left: 4px solid ${s.panelColor}; padding: 16px; border-radius: 4px; }
+    #save-bar { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: var(--card); border: 2px solid var(--accent); padding: 15px 40px; border-radius: 100px; display: none; align-items: center; gap: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.8); z-index: 999; }
     @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
 </style></head>
 <body>
-    <div class="container">
-        <div class="card">
-            <div class="nav">
+    <div class="wrapper">
+        <div class="glass-card">
+            <div class="sidebar">
                 <a href="/dashboard" class="${tab==='main'?'active':''}">🛡️ General</a>
                 <a href="/moderation" class="${tab==='mod'?'active':''}">⚔️ Moderation</a>
-                <a href="/tickets" class="${tab==='tickets'?'active':''}">🎫 Tickets</a>
+                <a href="/tickets" class="${tab==='tickets'?'active':''}">🎫 Ticket Studio</a>
             </div>
             ${content}
         </div>
     </div>
-    <div id="save-notify"><span>Changes detected!</span> <button onclick="document.forms[0].submit()" class="btn-save" style="padding:8px 20px; margin:0; width:auto; border-radius:30px;">Save Changes</button></div>
+    <div id="save-bar"><span>⚠️ Unsaved Changes Detected!</span> <button onclick="document.forms[0].submit()" class="btn btn-primary" style="padding:10px 25px; width:auto;">Save Now</button></div>
     <script>
-        document.querySelectorAll('input, select, textarea').forEach(el => {
-            el.oninput = () => document.getElementById('save-notify').style.display = 'flex';
-        });
+        document.querySelectorAll('input, select, textarea').forEach(el => el.oninput = () => document.getElementById('save-bar').style.display = 'flex');
+        function addDepartment() {
+            const list = document.getElementById('dept-list');
+            const id = 'dept_' + Date.now();
+            list.insertAdjacentHTML('beforeend', \`<div class="opt-card" id="\${id}"><span class="remove-opt" onclick="document.getElementById('\${id}').remove()">[DELETE]</span><label>Label</label><input name="opt_labels[]" placeholder="Support"><label>Emoji</label><input name="opt_emojis[]" placeholder="🎫"><label>Welcome Message</label><textarea name="opt_welcomes[]" rows="2" placeholder="Hi {user}..."></textarea><input type="hidden" name="opt_ids[]" value="\${id}"></div>\`);
+        }
     </script>
 </body></html>`;
 };
 
-app.get('/', (req, res) => res.send('<body style="background:#0b0f1a; display:flex; justify-content:center; align-items:center; height:100vh; color:white; font-family:sans-serif;"><form action="/login" method="POST" style="background:#161b2c; padding:40px; border-radius:20px; width:320px; border:1px solid #2d3748;"><h2>PRO LOGIN</h2><input name="gid" placeholder="Server ID" required style="width:100%; padding:12px; margin:10px 0; background:#0b0f1a; border:1px solid #2d3748; color:white;"><input name="pass" type="password" placeholder="Dashboard Pass" required style="width:100%; padding:12px; margin:10px 0; background:#0b0f1a; border:1px solid #2d3748; color:white;"><button style="width:100%; padding:12px; background:#3b82f6; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:bold;">ENTER TERMINAL</button></form></body>'));
+app.get('/', (req, res) => res.send('<body style="background:#0b0e14; color:white; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh;"><form action="/login" method="POST" style="background:#151921; padding:50px; border-radius:30px; width:350px; border:1px solid #262c3a;"><h2>SHER LOCK PRO</h2><p style="color:#64748b">Enter Terminal Credentials</p><input name="gid" placeholder="Server Guild ID" required style="width:100%; padding:15px; margin:10px 0; background:#0b0e14; border:1px solid #262c3a; border-radius:12px; color:white;"><input name="pass" type="password" placeholder="Access Key" required style="width:100%; padding:15px; margin:10px 0; background:#0b0e14; border:1px solid #262c3a; border-radius:12px; color:white;"><button style="width:100%; padding:15px; background:#3b82f6; color:white; border:none; border-radius:12px; cursor:pointer; font-weight:bold; font-size:16px;">VERIFY & ENTER</button></form></body>'));
 app.post('/login', (req, res) => { if(serverPasswords.get(req.body.gid) === req.body.pass) { req.session.gid = req.body.gid; res.redirect('/dashboard'); } else res.send("Access Denied."); });
 
 app.get('/dashboard', (req, res) => {
     const s = getGuildSettings(req.session.gid);
-    res.send(LAYOUT(`
+    res.send(THEME(`
         <form action="/save-main" method="POST">
-            <h2>System Identity</h2>
-            <div class="section">
-                <label>Staff/Mod Role ID</label><input name="mod" value="${s.modRoleId}" placeholder="ID of role allowed to bypass filters">
-                <label>Security Log Channel ID</label><input name="logs" value="${s.logChannelId}" placeholder="ID where bot sends violation logs">
+            <h2>Identity & Connectivity</h2>
+            <div class="grid">
+                <div class="input-group"><label>Security Log Channel ID</label><input name="logs" value="${s.logChannelId}"></div>
+                <div class="input-group"><label>Staff/Mod Role ID</label><input name="mod" value="${s.modRoleId}"></div>
             </div>
-            <button class="btn">Apply Identity</button>
+            <button class="btn btn-save">Update System Identity</button>
         </form>
     `, 'main', req.session.gid));
 });
@@ -282,29 +303,26 @@ app.get('/moderation', (req, res) => {
     const s = getGuildSettings(gid);
     const guild = client.guilds.cache.get(gid);
     const channels = guild ? guild.channels.cache.filter(c => c.type === ChannelType.GuildText) : [];
-    res.send(LAYOUT(`
+    res.send(THEME(`
         <form action="/save-mod" method="POST">
-            <h2>Shield Configuration</h2>
+            <h2>Moderation Shield V4</h2>
             <div class="grid">
                 <div class="section">
-                    <h3>Aggressive Filters</h3>
-                    <label><input type="checkbox" name="antiLink" ${s.antiLink?'checked':''} style="width:auto"> Anti-Link (Block URLs)</label><br>
-                    <label><input type="checkbox" name="ignoreBots" ${s.ignoreBots?'checked':''} style="width:auto"> Ignore Other Bots</label><br>
-                    <label><input type="checkbox" name="ignoreThreads" ${s.ignoreThreads?'checked':''} style="width:auto"> Ignore Threads</label>
-                    <label>Word Blacklist (Comma separated)</label>
-                    <textarea name="blacklist" rows="3">${s.blacklist.join(', ')}</textarea>
+                    <label><input type="checkbox" name="antiLink" ${s.antiLink?'checked':''} style="width:auto"> Anti-Link (Real-time Scan)</label><br><br>
+                    <label><input type="checkbox" name="antiSpam" ${s.antiSpam?'checked':''} style="width:auto"> Anti-Spam Protection</label>
+                    <label>Banned Phrase List (Comma Separated)</label>
+                    <textarea name="blacklist" rows="5">${s.blacklist.join(', ')}</textarea>
                 </div>
                 <div class="section">
-                    <h3>Channel Scrubbing</h3>
-                    <label>Auto-Delete Targets (Hold Ctrl to select)</label>
-                    <select name="autoDel[]" multiple style="height:120px">
+                    <label>Auto-Delete Targets (Select Multiple)</label>
+                    <select name="autoDel[]" multiple style="height:180px">
                         ${channels.map(c => `<option value="${c.id}" ${s.autoDeleteChannels.includes(c.id)?'selected':''}>#${c.name}</option>`).join('')}
                     </select>
-                    <label>Delay Before Delete (ms)</label>
+                    <label>Clean-up Delay (ms)</label>
                     <input type="number" name="delay" value="${s.deleteDelay}">
                 </div>
             </div>
-            <button class="btn">Update Shields</button>
+            <button class="btn btn-save">Hard-Code Shield Settings</button>
         </form>
     `, 'mod', gid));
 });
@@ -314,35 +332,45 @@ app.get('/tickets', (req, res) => {
     const s = getGuildSettings(gid);
     const guild = client.guilds.cache.get(gid);
     const channels = guild ? guild.channels.cache.filter(c => c.type === ChannelType.GuildText) : [];
-    res.send(LAYOUT(`
+    res.send(THEME(`
         <form action="/save-tickets" method="POST">
-            <h2>Ticket Studio</h2>
+            <h2>Ticket Studio (Hybrid Mode)</h2>
             <div class="grid">
                 <div class="section">
-                    <h3>Panel Content</h3>
-                    <label>Title</label><input name="title" value="${s.panelTitle}">
-                    <label>Description</label><textarea name="desc" rows="3">${s.panelDesc}</textarea>
-                    <label>Button Label</label><input name="btnLab" value="${s.panelButtonLabel}">
-                    <label>Button Emoji</label><input name="btnEmo" value="${s.panelButtonEmoji}">
+                    <label>Panel Title</label><input name="title" value="${s.panelTitle}">
+                    <label>Description</label><textarea name="desc" rows="4">${s.panelDesc}</textarea>
+                    <label>Category ID for Tickets</label><input name="cat" value="${s.ticketCategoryId}">
+                    <label>Panel Border Color (Hex)</label><input name="color" value="${s.panelColor}" type="color" style="height:50px">
                 </div>
                 <div class="section">
-                    <h3>Ticket Logic</h3>
-                    <label>Welcome Message ({user} is tag)</label><textarea name="welcome">${s.ticketWelcomeMsg}</textarea>
-                    <label>Closing Message</label><input name="close" value="${s.ticketCloseMsg}">
-                    <label>Category ID (For Tickets)</label><input name="cat" value="${s.ticketCategoryId}">
-                    <label>Deploy To Channel</label>
+                    <label>Interface Type</label>
+                    <select name="type">
+                        <option value="BUTTON" ${s.panelType==='BUTTON'?'selected':''}>Multi-Buttons (Max 5)</option>
+                        <option value="DROPDOWN" ${s.panelType==='DROPDOWN'?'selected':''}>Select Menu (Infinite)</option>
+                    </select>
+                    <label>Panel Image URL (Optional)</label><input name="image" value="${s.panelImage}">
+                    <label>Deployment Channel</label>
                     <select name="chan">${channels.map(c => `<option value="${c.id}" ${s.targetPanelChannel===c.id?'selected':''}>#${c.name}</option>`).join('')}</select>
                 </div>
             </div>
-            <div class="discord-mock">
-                <div class="discord-header"><strong>SHER LOCK</strong> <span class="bot-tag">APP</span></div>
-                <div class="discord-embed">
-                    <div style="font-weight:bold; font-size:16px;">${s.panelTitle}</div>
-                    <div style="color:#dbdee1; font-size:14px; margin-top:5px;">${s.panelDesc}</div>
+            <div class="section">
+                <h3>Departments & Automated Responses</h3>
+                <div id="dept-list">
+                    ${s.ticketOptions.map((o, i) => `
+                        <div class="opt-card" id="o_${i}">
+                            <span class="remove-opt" onclick="this.parentElement.remove()">[DELETE]</span>
+                            <div class="grid">
+                                <div><label>Label</label><input name="opt_labels[]" value="${o.label}"></div>
+                                <div><label>Emoji</label><input name="opt_emojis[]" value="${o.emoji}"></div>
+                            </div>
+                            <label>Welcome Message</label><textarea name="opt_welcomes[]" rows="2">${o.welcome}</textarea>
+                            <input type="hidden" name="opt_ids[]" value="${o.id}">
+                        </div>
+                    `).join('')}
                 </div>
-                <div class="discord-btn">${s.panelButtonEmoji} ${s.panelButtonLabel}</div>
+                <button type="button" class="btn btn-outline" onclick="addDepartment()">+ Create New Department</button>
             </div>
-            <button class="btn btn-save">Deploy & Save Panel</button>
+            <button class="btn btn-save">🚀 Deploy New Panel</button>
         </form>
     `, 'tickets', gid));
 });
@@ -357,10 +385,9 @@ app.post('/save-main', (req, res) => {
 app.post('/save-mod', (req, res) => {
     const s = getGuildSettings(req.session.gid);
     s.antiLink = req.body.antiLink === 'on';
-    s.ignoreBots = req.body.ignoreBots === 'on';
-    s.ignoreThreads = req.body.ignoreThreads === 'on';
-    s.blacklist = req.body.blacklist.split(',').map(w => w.trim()).filter(w => w.length > 0);
-    s.autoDeleteChannels = Array.isArray(req.body['autoDel[]']) ? req.body['autoDel[]'] : (req.body['autoDel[]'] ? [req.body['autoDel[]']] : []);
+    s.antiSpam = req.body.antiSpam === 'on';
+    s.blacklist = req.body.blacklist.split(',').map(w => w.trim()).filter(w => w);
+    s.autoDeleteChannels = [].concat(req.body['autoDel[]'] || []);
     s.deleteDelay = parseInt(req.body.delay) || 3000;
     res.redirect('/moderation');
 });
@@ -369,22 +396,49 @@ app.post('/save-tickets', async (req, res) => {
     const s = getGuildSettings(req.session.gid);
     s.panelTitle = req.body.title;
     s.panelDesc = req.body.desc;
-    s.panelButtonLabel = req.body.btnLab;
-    s.panelButtonEmoji = req.body.btnEmo;
-    s.ticketWelcomeMsg = req.body.welcome;
-    s.ticketCloseMsg = req.body.close;
+    s.panelType = req.body.type;
+    s.panelColor = req.body.color;
+    s.panelImage = req.body.image;
     s.ticketCategoryId = req.body.cat;
     s.targetPanelChannel = req.body.chan;
-    
+
+    const labels = [].concat(req.body['opt_labels[]'] || []);
+    const emojis = [].concat(req.body['opt_emojis[]'] || []);
+    const welcomes = [].concat(req.body['opt_welcomes[]'] || []);
+    const ids = [].concat(req.body['opt_ids[]'] || []);
+
+    s.ticketOptions = labels.map((l, i) => ({
+        id: ids[i] || `opt_${i}`,
+        label: l,
+        emoji: emojis[i],
+        welcome: welcomes[i]
+    }));
+
     const chan = client.channels.cache.get(s.targetPanelChannel);
-    if(chan) {
-        const embed = new EmbedBuilder().setTitle(s.panelTitle).setDescription(s.panelDesc).setColor(s.panelColor);
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('open_ticket').setLabel(s.panelButtonLabel).setEmoji(s.panelButtonEmoji).setStyle(ButtonStyle.Primary)
-        );
-        await chan.send({ embeds: [embed], components: [row] }).catch(()=>{});
+    if (chan) {
+        const embed = new EmbedBuilder()
+            .setTitle(s.panelTitle)
+            .setDescription(s.panelDesc)
+            .setColor(s.panelColor)
+            .setFooter({ text: s.panelFooter })
+            .setTimestamp();
+        if(s.panelImage) embed.setImage(s.panelImage);
+
+        const row = new ActionRowBuilder();
+        if (s.panelType === 'BUTTON') {
+            s.ticketOptions.slice(0, 5).forEach(opt => {
+                row.addComponents(new ButtonBuilder().setCustomId(`tkt_${opt.id}`).setLabel(opt.label).setEmoji(opt.emoji).setStyle(ButtonStyle.Primary));
+            });
+        } else {
+            const menu = new StringSelectMenuBuilder().setCustomId('tkt_select').setPlaceholder('Select Department...');
+            s.ticketOptions.forEach(opt => {
+                menu.addOptions(new StringSelectMenuOptionBuilder().setLabel(opt.label).setValue(opt.id).setEmoji(opt.emoji));
+            });
+            row.addComponents(menu);
+        }
+        await chan.send({ embeds: [embed], components: [row] }).catch(() => {});
     }
     res.redirect('/tickets');
 });
 
-app.listen(CONFIG.PORT, () => console.log(`[DASHBOARD] Live on port ${CONFIG.PORT}`));
+app.listen(CONFIG.PORT, () => console.log(`[DASHBOARD] Pro Terminal running on port ${CONFIG.PORT}`));
